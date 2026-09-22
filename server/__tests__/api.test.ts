@@ -1,0 +1,123 @@
+// @vitest-environment node
+import { afterEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import type { Server } from 'node:http';
+import { createApp } from '../app';
+import type { Sessions, SessionRecord } from '../sessions';
+import { digest } from '../sessions';
+import { config, manifest, studyId } from './fixtures';
+import { remoteStateSchema } from '../../src/types/remote';
+import { initialState, validateState } from '../validation';
+
+const servers: Server[] = [];
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); })));
+});
+async function harness() {
+  const records = new Map<string, SessionRecord>();
+  const events = new EventEmitter();
+  const statuses = new Map<string, string>();
+  const sessions: Sessions = {
+    async create(studyId, state, ttl) {
+      const token = randomUUID();
+      const session = { id: randomUUID(), studyId, state, revision: 0, tokenHash: digest(token), expiresAt: Date.now() + ttl * 1000 };
+      records.set(session.id, session);
+      return { session, token };
+    },
+    async get(id) { return records.get(id); },
+    async update(id, expected, studyId, state) {
+      const record = records.get(id);
+      if (!record) return -1;
+      if (record.revision !== expected) return -2;
+      records.set(id, { ...record, studyId, state, revision: record.revision + 1 });
+      return record.revision + 1;
+    },
+    async remove(id) { records.delete(id); },
+    async status(id, value) { if (value) statuses.set(id, value); return statuses.get(id) ?? null; }
+  };
+  const app = createApp({
+    config, sessions, manifest: async () => manifest, sign: async key => `https://s3.example.com/${key}`,
+    enqueue: async () => undefined, job: async id => id === studyId ? { status: 'completed', progress: 100 } : undefined,
+    publish: async id => { events.emit(id); },
+    subscribe: (id, notify) => { events.on(id, notify); return () => { events.off(id, notify); }; }, healthy: () => true
+  });
+  const server = app.listen(0, '127.0.0.1');
+  servers.push(server);
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing test server');
+  const request = (url: string, method = 'GET', data?: unknown, token = config.SERVICE_API_KEY) => fetch(`http://127.0.0.1:${address.port}${url}`, {
+    method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data)
+  });
+  const create = async () => {
+    const response = await request('/api/v1/sessions', 'POST', { studyId });
+    expect(response.status).toBe(201);
+    const session = await response.json() as { id: string; revision: number; viewerUrl: string };
+    const token = new URLSearchParams(new URL(session.viewerUrl).hash.slice(1)).get('token')!;
+    return { ...session, token };
+  };
+  return { request, create };
+}
+describe('viewer API', () => {
+  it('requires service authentication and constrains source keys', async () => {
+    const { request } = await harness();
+    expect((await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' }, 'bad')).status).toBe(401);
+    expect((await request('/api/v1/studies', 'POST', { zipKey: 'other/a.zip' })).status).toBe(400);
+    expect((await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' })).status).toBe(202);
+    expect((await request('/api/v1/studies', 'POST', { modality: 'MRI', zipKey: 'MRI/a.zip' })).status).toBe(400);
+  });
+  it('scopes viewer credentials to one session and prevents them from controlling sessions', async () => {
+    const { request, create } = await harness();
+    const one = await create();
+    const two = await create();
+    expect((await request(`/api/viewer/${one.id}/manifest`, 'GET', undefined, one.token)).status).toBe(200);
+    expect((await request(`/api/viewer/${two.id}/manifest`, 'GET', undefined, one.token)).status).toBe(401);
+    expect((await request(`/api/v1/sessions/${one.id}`, 'GET', undefined, one.token)).status).toBe(401);
+    expect((await request(`/api/viewer/${one.id}/frames`, 'POST', { instanceIds: ['foreign-instance'] }, one.token)).status).toBe(404);
+    const frames = await request(`/api/viewer/${one.id}/frames`, 'POST', { instanceIds: ['1.2.3.4.1'] }, one.token);
+    expect(frames.status).toBe(200);
+  });
+  it('validates slices, detects conflicting writes and restores latest state on reconnect', async () => {
+    const { request, create } = await harness();
+    const session = await create();
+    const state = initialState(manifest);
+    state.viewports[0].instanceIndex = 999;
+    expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 0, state })).status).toBe(400);
+    state.viewports[0].instanceIndex = 1;
+    expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 0, state })).status).toBe(200);
+    expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 0, state })).status).toBe(409);
+    const stream = await request(`/api/viewer/${session.id}/events`, 'GET', undefined, session.token);
+    const reader = stream.body!.getReader();
+    const first = await reader.read();
+    const event = JSON.parse(new TextDecoder().decode(first.value).split('\n')[0]);
+    expect(event.session.revision).toBe(1);
+    expect(event.session.state.viewports[0].instanceIndex).toBe(1);
+    state.viewports[0].instanceIndex = 0;
+    expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 1, state })).status).toBe(200);
+    const update = await reader.read();
+    const updateEvent = JSON.parse(new TextDecoder().decode(update.value).split('\n')[0]);
+    expect(updateEvent.session.revision).toBe(2);
+    expect(updateEvent.session.state.viewports[0].instanceIndex).toBe(0);
+    await reader.cancel();
+  });
+  it('reports applied state separately and revokes further access', async () => {
+    const { request, create } = await harness();
+    const session = await create();
+    expect((await request(`/api/viewer/${session.id}/status`, 'POST', { clientId: randomUUID(), appliedRevision: 1 }, session.token)).status).toBe(400);
+    expect((await request(`/api/viewer/${session.id}/status`, 'POST', { clientId: randomUUID(), appliedRevision: 0, state: initialState(manifest) }, session.token)).status).toBe(204);
+    const result = await (await request(`/api/v1/sessions/${session.id}`)).json();
+    expect(result.lastClientStatus.appliedRevision).toBe(0);
+    expect((await request(`/api/v1/sessions/${session.id}`, 'DELETE')).status).toBe(204);
+    expect((await request(`/api/viewer/${session.id}/manifest`, 'GET', undefined, session.token)).status).toBe(401);
+  });
+});
+describe('control validation', () => {
+  it('rejects mismatched layouts, nonfinite camera values and foreign measurements', () => {
+    const state = initialState(manifest);
+    expect(remoteStateSchema.safeParse({ ...state, layout: '2x2' }).success).toBe(false);
+    expect(remoteStateSchema.safeParse({ ...state, viewports: [{ ...state.viewports[0], windowWidth: Infinity, windowCenter: 0 }] }).success).toBe(false);
+    state.measurements.push({ id: 'a', type: 'annotation', studyInstanceUID: 'wrong', seriesInstanceUID: 'wrong', sopInstanceUID: 'wrong', points: [{ x: 0, y: 0 }], createdAt: '2026-09-23' });
+    expect(validateState(state, manifest)).toBe(false);
+  });
+});

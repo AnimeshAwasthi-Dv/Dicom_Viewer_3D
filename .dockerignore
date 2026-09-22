@@ -1,0 +1,10 @@
+node_modules
+dist
+server-dist
+.git
+.env
+.env.*
+*.zip
+*.log
+test-data
+coverage

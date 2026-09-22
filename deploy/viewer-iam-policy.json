@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadModalityArchives",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": [
+        "arn:aws:s3:::decxpert-studies/CT/*",
+        "arn:aws:s3:::decxpert-mri/MRI/*",
+        "arn:aws:s3:::decxpert-xray/Xray/*",
+        "arn:aws:s3:::decxpert-mammography/Mammography/*"
+      ]
+    },
+    {
+      "Sid": "ReadWriteDerivedViewerData",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": ["arn:aws:s3:::decxpert-studies/viewer-derived/*"]
+    }
+  ]
+}

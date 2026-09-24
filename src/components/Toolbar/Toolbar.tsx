@@ -62,29 +62,39 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
   );
 
   return (
-    <nav className="toolbar">
+    <nav className="toolbar" aria-label="Viewer tools">
       <div className="tool-group primary-tools">
         {primaryTools.map((tool) => (
-          <button key={tool.id} disabled={disabled} className={activeTool === tool.id ? 'active' : ''} title={tool.label} onClick={() => selectTool(tool.id)}>
+          <button key={tool.id} disabled={disabled} className={activeTool === tool.id ? 'active' : ''} title={tool.label} aria-label={tool.label} aria-pressed={activeTool === tool.id} onClick={() => selectTool(tool.id)}>
             {tool.icon}<span>{tool.shortLabel}</span>
           </button>
         ))}
       </div>
 
       <div className="tool-group toolbar-actions">
+        <div className="tool-group desktop-toolbar-actions">
         <button disabled={disabled} title="Undo last annotation or measurement (Ctrl+Z)" onClick={undoLast}><Undo2 size={16} /><span>Undo</span></button>
         <button disabled={disabled || (series?.instances.length ?? 0) < 2} title="3D MPR" className={mprOpen ? 'active' : ''} onClick={toggleMpr}><Box size={16} /><span>MPR</span></button>
         {cineButton}
-        <button title="More tools" className={moreMenuOpen ? 'active' : ''} onPointerDown={(event) => event.stopPropagation()} onClick={() => setMoreMenuOpen((open) => !open)}>
-          <MoreHorizontal size={17} />
+        </div>
+        <button title="More tools" aria-label="More tools" aria-expanded={moreMenuOpen} className={moreMenuOpen ? 'active' : ''} onPointerDown={(event) => event.stopPropagation()} onClick={() => setMoreMenuOpen((open) => !open)}>
+          <MoreHorizontal size={17} /><span>More</span>
         </button>
         {moreMenuOpen && (
           <div className="more-menu" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="more-menu-section mobile-toolbar-actions">
+              <span className="more-menu-title">Actions</span>
+              <div className="more-tool-grid">
+        <button disabled={disabled} title="Undo last annotation or measurement (Ctrl+Z)" onClick={undoLast}><Undo2 size={16} /><span>Undo</span></button>
+        <button disabled={disabled || (series?.instances.length ?? 0) < 2} title="3D MPR" className={mprOpen ? 'active' : ''} onClick={toggleMpr}><Box size={16} /><span>MPR</span></button>
+        {cineButton}
+              </div>
+            </div>
             <div className="more-menu-section">
               <span className="more-menu-title">Tools</span>
               <div className="more-tool-grid">
                 {advancedTools.map((tool) => (
-                  <button key={tool.id} disabled={disabled} className={activeTool === tool.id ? 'active' : ''} title={tool.label} onClick={() => selectTool(tool.id)}>
+                  <button key={tool.id} disabled={disabled} className={activeTool === tool.id ? 'active' : ''} title={tool.label} aria-label={tool.label} aria-pressed={activeTool === tool.id} onClick={() => selectTool(tool.id)}>
                     {tool.icon}<span>{tool.shortLabel}</span>
                   </button>
                 ))}

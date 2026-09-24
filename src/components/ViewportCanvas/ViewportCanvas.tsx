@@ -305,7 +305,7 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
   const allOverlayMeasurements = draft ? [...visibleMeasurements, { id: 'draft', type: draft.type, points: draft.points, label: '' } as Measurement] : visibleMeasurements;
 
   return (
-    <div className="viewport-wrap" onContextMenu={(event) => event.preventDefault()}>
+    <div className={`viewport-wrap ${(currentSeries?.instances.length ?? 0) <= 1 ? 'single-image' : ''}`} onContextMenu={(event) => event.preventDefault()}>
       <canvas
         ref={canvasRef}
         className="viewport-canvas"
@@ -344,11 +344,11 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
       <div className="viewport-controls">
         <WindowPresets viewportId={viewport.id} modality={currentFrame?.metadata.modality} />
       </div>
-      {currentSeries && (
+      {currentSeries && currentSeries.instances.length > 1 && (
         <div className="slice-scrubber">
           <span>{viewport.instanceIndex + 1}</span>
           <input
-            type="range"
+            type="range" aria-label="Image slice"
             min={0}
             max={Math.max(0, currentSeries.instances.length - 1)}
             value={viewport.instanceIndex}

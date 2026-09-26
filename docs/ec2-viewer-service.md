@@ -28,7 +28,7 @@ The example configuration maps your supplied bucket names as follows. Confirm th
 
 For example, an input is `CT/study-123/archive.zip`, not an `s3://` URL. Prefixes and case must match your real keys. The worker reads the original archive without changing it and writes extracted DICOM objects plus `manifest.json` under `s3://decxpert-studies/viewer-derived/<import-id>/`. Change `S3_BUCKET` if derived objects should live in a separate bucket. Only the derived bucket requires browser CORS.
 
-Each import has its own ID. Store that ID in your portal and reuse it when opening additional sessions. Importing the same ZIP again currently makes another copy; automatic source-version deduplication is not implemented. Do not overwrite a source ZIP while an import is retrying. Use immutable source keys or add object-version pinning before using mutable keys.
+An import's ID is derived from the source bucket, key and object version (ETag, plus VersionId when bucket versioning is on). Posting the same ZIP again returns the existing study immediately (`200`, `"reused": true`) instead of unpacking it again, so the portal can call import every time a clinician opens a scan. A failed import runs again under the same ID. Replacing the ZIP at the same key gives a new ID and a fresh import. Do not overwrite a source ZIP while its import is running.
 
 ## EC2 deployment
 
@@ -64,7 +64,7 @@ Content-Type: application/json
 {"modality":"CT","zipKey":"CT/study-123/archive.zip"}
 ```
 
-Returns HTTP 202 with `{ "id": "<study-id>", "status": "queued", "statusUrl": "/api/v1/studies/<study-id>" }`. Poll `GET /api/v1/studies/<study-id>` until `status` is `completed`. The response includes the indexed manifest and `skippedFiles`. `failed` means the import exhausted its retries. Jobs retry three times; worker processes recover stalled jobs using BullMQ. Completed jobs are retained so import IDs remain usable. Plan Redis persistence/capacity and a coordinated retention policy for old job records and derived S3 objects; no automatic study deletion is configured.
+Returns HTTP 202 with `{ "id": "<study-id>", "status": "queued", "reused": false, "statusUrl": "/api/v1/studies/<study-id>" }` for a new import, or HTTP 200 with `"reused": true` and the current status when this ZIP version was already imported or is importing. HTTP 404 means the ZIP doesn't exist; the service needs `s3:GetObject` on the source key, which also allows the HEAD request used to read its version. Poll `GET /api/v1/studies/<study-id>` until `status` is `completed`. The response includes the indexed manifest and `skippedFiles`. `failed` means the import exhausted its retries. Jobs retry three times; worker processes recover stalled jobs using BullMQ. Completed jobs are retained so import IDs remain usable. Plan Redis persistence/capacity and a coordinated retention policy for old job records and derived S3 objects; no automatic study deletion is configured.
 
 The importer enforces compressed size, total expanded size, entry size and entry count limits. It handles nested folders, but does not recursively unpack nested ZIP files. Non-DICOM entries, unsupported codecs and multiframe instances are skipped and counted. An archive with no supported single-frame images fails. Duplicate SOP Instance UIDs fail to avoid ambiguous image selection. `skippedFiles > 0` requires inspection before assuming the complete study is available. Failed imports can leave partial derived objects in that import's prefix; remove them through your retention process after investigation.
 

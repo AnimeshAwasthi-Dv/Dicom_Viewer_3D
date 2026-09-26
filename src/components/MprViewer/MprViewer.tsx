@@ -7,6 +7,7 @@ import { useUiStore } from '../../store/uiStore';
 import { buildDicomVolume, planeDimensions, renderPlane, type DicomVolume, type MprPlane } from '../../viewer/mpr/Volume';
 import type { Series } from '../../viewer/study/Series';
 import { useRemoteControlStore } from '../../store/remoteControlStore';
+import { deviceProfile } from '../../viewer/core/DeviceProfile';
 
 const planes: Array<{ id: MprPlane; label: string }> = [
   { id: 'axial', label: 'Axial' },
@@ -70,6 +71,9 @@ function planePhysicalAspect(volume: DicomVolume, plane: MprPlane): number {
   return (volume.depth * spacingZ) / (volume.height * spacingY);
 }
 
+// Reused for every plane draw instead of allocating a canvas per slice change.
+const scratchCanvas = document.createElement('canvas');
+
 function drawPlane(canvas: HTMLCanvasElement, volume: DicomVolume, plane: MprPlane, index: number, windowWidth: number, windowCenter: number): void {
   const context = canvas.getContext('2d');
   if (!context) return;
@@ -83,7 +87,7 @@ function drawPlane(canvas: HTMLCanvasElement, volume: DicomVolume, plane: MprPla
   }
 
   const planeImage = renderPlane(volume, plane, index, windowWidth, windowCenter);
-  const sourceCanvas = document.createElement('canvas');
+  const sourceCanvas = scratchCanvas;
   sourceCanvas.width = planeImage.width;
   sourceCanvas.height = planeImage.height;
   sourceCanvas.getContext('2d')?.putImageData(planeImage.imageData, 0, 0);
@@ -249,17 +253,20 @@ function createVolumeTexture(volume: DicomVolume, maxDimension: number): { textu
   const height = Math.ceil(volume.height / reduction);
   const depth = Math.ceil(volume.depth / reduction);
   const textureData = new Uint8Array(width * height * depth);
+  const data = volume.data;
+  const plane = volume.width * volume.height;
+  const low = volume.min;
+  const scale = 255 / Math.max(1, volume.max - volume.min);
   let output = 0;
 
+  // Hot loop (millions of voxels): index maths and normalisation are inlined.
   for (let z = 0; z < depth; z += 1) {
-    const sourceZ = Math.min(volume.depth - 1, Math.round(z * reduction));
+    const zOffset = Math.min(volume.depth - 1, z * reduction) * plane;
     for (let y = 0; y < height; y += 1) {
-      const sourceY = Math.min(volume.height - 1, Math.round(y * reduction));
+      const rowOffset = zOffset + Math.min(volume.height - 1, y * reduction) * volume.width;
       for (let x = 0; x < width; x += 1) {
-        const sourceX = Math.min(volume.width - 1, Math.round(x * reduction));
-        const value = volume.data[sourceZ * volume.width * volume.height + sourceY * volume.width + sourceX];
-        textureData[output] = Math.round(normalizeValue(volume, value) * 255);
-        output += 1;
+        const scaled = (data[rowOffset + Math.min(volume.width - 1, x * reduction)] - low) * scale;
+        textureData[output++] = scaled <= 0 ? 0 : scaled >= 255 ? 255 : (scaled + 0.5) | 0;
       }
     }
   }
@@ -283,7 +290,10 @@ function createVolumeTexture(volume: DicomVolume, maxDimension: number): { textu
 }
 
 export function MprViewer({ series }: { series?: Series }): JSX.Element {
-  const { imageSource, studies, selectedSeriesId, addError } = useStudyStore();
+  const imageSource = useStudyStore((state) => state.imageSource);
+  const studies = useStudyStore((state) => state.studies);
+  const selectedSeriesId = useStudyStore((state) => state.selectedSeriesId);
+  const addError = useStudyStore((state) => state.addError);
   const currentSeries = series ?? selectCurrentSeries(studies, selectedSeriesId);
   const setMprOpen = useUiStore((state) => state.setMprOpen);
   const [volume, setVolume] = useState<DicomVolume>();
@@ -298,7 +308,8 @@ export function MprViewer({ series }: { series?: Series }): JSX.Element {
   const [volumeWindowCenter, setVolumeWindowCenter] = useState<number>(volumePresets.lung.windowCenter);
   const [volumeOpacity, setVolumeOpacity] = useState<number>(volumePresets.lung.opacity);
   const [slabThickness, setSlabThickness] = useState<number>(volumePresets.lung.slab);
-  const [volumeQuality, setVolumeQuality] = useState<VolumeQualityId>('hd');
+  // Phones start at Fast: the HD volume texture and render size are too heavy for mobile GPUs and memory.
+  const [volumeQuality, setVolumeQuality] = useState<VolumeQualityId>(() => (deviceProfile().constrained ? 'fast' : 'hd'));
   const [fourDCine, setFourDCine] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const mprRequest = useRemoteControlStore(state => state.mprRequest);
@@ -340,22 +351,31 @@ export function MprViewer({ series }: { series?: Series }): JSX.Element {
     };
   }, [addError, currentSeries, imageSource]);
 
+  // What each 2D plane and 3D slice texture last showed, so moving one plane doesn't redraw the other two.
+  const drawnPlanes = useRef<Partial<Record<MprPlane, string>>>({});
+  const paintedTextures = useRef<Partial<Record<MprPlane, string>>>({});
+
   useEffect(() => {
     if (!volume) return;
-    const renderAll = () => {
+    const renderAll = (force: boolean) => {
       planes.forEach((plane) => {
         const canvas = canvasRefs.current[plane.id];
-        if (canvas) drawPlane(canvas, volume, plane.id, indices[plane.id], windowWidth, windowCenter);
+        const key = `${indices[plane.id]}:${windowWidth}:${windowCenter}`;
+        if (!canvas || (!force && drawnPlanes.current[plane.id] === key)) return;
+        drawnPlanes.current[plane.id] = key;
+        drawPlane(canvas, volume, plane.id, indices[plane.id], windowWidth, windowCenter);
       });
     };
-    renderAll();
-    const observer = new ResizeObserver(renderAll);
+    renderAll(false);
+    const observer = new ResizeObserver(() => renderAll(true));
     planes.forEach((plane) => {
       const canvas = canvasRefs.current[plane.id];
       if (canvas) observer.observe(canvas);
     });
     return () => observer.disconnect();
   }, [indices, volume, windowCenter, windowWidth]);
+
+  useEffect(() => { drawnPlanes.current = {}; }, [volume]);
 
   useEffect(() => {
     const canvas = modelCanvasRef.current;
@@ -419,6 +439,7 @@ export function MprViewer({ series }: { series?: Series }): JSX.Element {
       slicePlanes[plane.id] = { mesh, texture, canvas: textureCanvas };
     });
     slicePlanesRef.current = slicePlanes;
+    paintedTextures.current = {};
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
@@ -528,20 +549,32 @@ export function MprViewer({ series }: { series?: Series }): JSX.Element {
     const scaleY = coronal?.mesh.geometry.parameters.height ?? 1;
     const scaleZ = axial?.mesh.geometry.parameters.height ?? 1;
     if (axial) {
-      paintPlaneTexture(axial.canvas, volume, 'axial', indices.axial, windowWidth, windowCenter);
-      axial.texture.needsUpdate = true;
+      const axialKey = `${indices.axial}:${windowWidth}:${windowCenter}`;
+      if (paintedTextures.current.axial !== axialKey) {
+        paintedTextures.current.axial = axialKey;
+        paintPlaneTexture(axial.canvas, volume, 'axial', indices.axial, windowWidth, windowCenter);
+        axial.texture.needsUpdate = true;
+      }
       axial.mesh.position.set(0, (indices.axial / Math.max(1, volume.depth - 1) - 0.5) * scaleY, 0);
       axial.mesh.visible = showMprPlanes;
     }
     if (coronal) {
-      paintPlaneTexture(coronal.canvas, volume, 'coronal', indices.coronal, windowWidth, windowCenter);
-      coronal.texture.needsUpdate = true;
+      const coronalKey = `${indices.coronal}:${windowWidth}:${windowCenter}`;
+      if (paintedTextures.current.coronal !== coronalKey) {
+        paintedTextures.current.coronal = coronalKey;
+        paintPlaneTexture(coronal.canvas, volume, 'coronal', indices.coronal, windowWidth, windowCenter);
+        coronal.texture.needsUpdate = true;
+      }
       coronal.mesh.position.set(0, 0, (indices.coronal / Math.max(1, volume.height - 1) - 0.5) * scaleZ);
       coronal.mesh.visible = showMprPlanes;
     }
     if (sagittal) {
-      paintPlaneTexture(sagittal.canvas, volume, 'sagittal', indices.sagittal, windowWidth, windowCenter);
-      sagittal.texture.needsUpdate = true;
+      const sagittalKey = `${indices.sagittal}:${windowWidth}:${windowCenter}`;
+      if (paintedTextures.current.sagittal !== sagittalKey) {
+        paintedTextures.current.sagittal = sagittalKey;
+        paintPlaneTexture(sagittal.canvas, volume, 'sagittal', indices.sagittal, windowWidth, windowCenter);
+        sagittal.texture.needsUpdate = true;
+      }
       sagittal.mesh.position.set((indices.sagittal / Math.max(1, volume.width - 1) - 0.5) * scaleX, 0, 0);
       sagittal.mesh.visible = showMprPlanes;
     }

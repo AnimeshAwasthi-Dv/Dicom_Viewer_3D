@@ -60,7 +60,8 @@ export interface ParsedDicomFile {
 
 export interface DecodedFrame {
   metadata: DicomMetadata;
-  storedPixels: Int16Array | Uint16Array | Uint8Array | Int8Array;
+  // Decoders fill this, but frames decoded in the worker pool drop it: nothing reads it and it would double the cache size.
+  storedPixels?: Int16Array | Uint16Array | Uint8Array | Int8Array;
   modalityPixels: Float32Array;
   min: number;
   max: number;

@@ -427,7 +427,11 @@ button, select { font: inherit; }
 
 .viewport-wrap { position: relative; min-width: 0; min-height: 0; background: #000; overflow: hidden; }
 .viewport-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
-.viewport-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #718494; font-size: 13px; }
+.viewport-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #718494; font-size: 13px; pointer-events: none; }
+/* Shown while the next slice loads; the previous slice stays visible underneath. */
+.viewport-loading { position: absolute; top: 12px; right: 12px; z-index: 4; width: 14px; height: 14px; border: 2px solid #53bcea55; border-top-color: #53bcea; border-radius: 50%; animation: viewport-spin .7s linear infinite; pointer-events: none; }
+@keyframes viewport-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .viewport-loading { animation: none; } }
 .viewport-controls { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 4; }
 .preset-select { height: 28px; border: 1px solid #263847; background: rgba(8, 13, 18, .85); color: #c8d6e2; border-radius: 5px; padding: 0 8px; }
 .slice-scrubber {
@@ -459,10 +463,12 @@ button, select { font: inherit; }
 .bottom-left { bottom: 14px; left: 14px; }
 .bottom-right { bottom: 14px; right: 14px; text-align: right; }
 .orientation { position: absolute; color: #8fd8ff; font-weight: 700; opacity: .78; }
-.orientation.top { top: 8px; left: 50%; }
-.orientation.bottom { bottom: 8px; left: 50%; }
-.orientation.left { top: 50%; left: 8px; }
-.orientation.right { top: 50%; right: 8px; }
+/* Clear of the preset menu above and the slice slider below. */
+.orientation.top { top: 46px; left: 50%; transform: translateX(-50%); }
+.orientation.bottom { bottom: 56px; left: 50%; transform: translateX(-50%); }
+.viewport-wrap.single-image .orientation.bottom { bottom: 8px; }
+.orientation.left { top: 50%; left: 8px; transform: translateY(-50%); }
+.orientation.right { top: 50%; right: 8px; transform: translateY(-50%); }
 
 .measurement-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .measure-shape { fill: rgba(100, 207, 255, .08); stroke: #64d7ff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
@@ -1316,9 +1322,34 @@ button, select { font: inherit; }
   .series-tile.grid .series-preview, .series-tile.list .series-preview { width: 54px; height: 54px; min-height: 54px; }
   .series-nav { display: none; }
   .viewport-controls { top: 48px; }
+  /* The preset menu sits lower here, so the marker goes above it. */
+  .orientation.top { top: 8px; }
   .preset-select { height: 36px; }
   .ov span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .bottom-left, .bottom-right { bottom: 64px; }
   .viewport-wrap.single-image .bottom-left, .viewport-wrap.single-image .bottom-right { bottom: 18px; }
   .status-bar { min-width: 0; }
+}
+/* Phones: give the image as much height as possible. */
+@media (max-width: 760px) {
+  .brand-block span, .patient-header .study-block { display: none; }
+  .patient-header { min-height: 0; padding: 6px 10px; row-gap: 2px; }
+  .workstation { grid-template-rows: 112px minmax(0, 1fr); }
+  .series-tile.grid, .series-tile.list { width: 168px; flex-basis: 168px; padding: 4px 6px; }
+  .series-tile.grid .series-preview, .series-tile.list .series-preview { width: 48px; height: 48px; min-height: 48px; }
+  .status-bar { overflow: hidden; white-space: nowrap; }
+  .status-bar .status-optional { display: none; }
+  /* Sits above the slice slider instead of covering it. */
+  .remote-session-status { bottom: calc(96px + env(safe-area-inset-bottom)); right: 8px; }
+}
+/* Phones in landscape: little height, so the header and status bar give way to the image. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .brand-block span, .patient-header .study-block, .status-bar { display: none; }
+  .patient-header { min-height: 0; padding: 4px 10px; }
+  .viewer-shell { grid-template-rows: auto auto minmax(0, 1fr); }
+  /* Keep the preset menu off the orientation marker and the slice slider off the corner text. */
+  .viewport-controls { top: 40px; }
+  .orientation.top { top: 8px; }
+  .bottom-left, .bottom-right { bottom: 64px; }
+  .viewport-wrap.single-image .bottom-left, .viewport-wrap.single-image .bottom-right { bottom: 18px; }
 }

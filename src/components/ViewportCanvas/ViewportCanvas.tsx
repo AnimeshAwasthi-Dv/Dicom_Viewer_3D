@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DecodedFrame } from '../../types/dicom';
 import { useMeasurementStore } from '../../store/measurementStore';
 import { selectCurrentSeries, useStudyStore } from '../../store/studyStore';
@@ -6,7 +6,8 @@ import { useUiStore } from '../../store/uiStore';
 import { useViewerStore } from '../../store/viewerStore';
 import { FrameLoadScheduler } from '../../viewer/cache/FrameLoadScheduler';
 import type { ViewportState } from '../../viewer/core/Viewport';
-import { screenToViewport, viewportToImage, imageToViewport, pixelDistanceMm, type Point } from '../../viewer/measurements/CoordinateTransforms';
+import { screenToViewport, viewportToImage, imageToViewport, orientationMarkers, pixelDistanceMm, type Point } from '../../viewer/measurements/CoordinateTransforms';
+import { markFirstImage, markInteraction } from '../../viewer/cache/BackgroundWork';
 import { computeAngle, computeRoiStats } from '../../viewer/measurements/MeasurementManager';
 import type { Measurement, MeasurementType } from '../../viewer/measurements/Measurement';
 import { WebGLRenderer } from '../../viewer/rendering/WebGLRenderer';
@@ -37,20 +38,40 @@ function initialWindow(frame: DecodedFrame): { width: number; center: number } {
   return { width, center: min + width / 2 };
 }
 
-export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; series?: Series }): JSX.Element {
+// Render time is diagnostic only; publishing it on every frame would re-render the status bar at 60 Hz.
+let lastRenderTimePublish = 0;
+
+function viewportIndex(viewportId: string): number {
+  return useViewerStore.getState().viewports.find((vp) => vp.id === viewportId)?.instanceIndex ?? 0;
+}
+
+export const ViewportCanvas = memo(function ViewportCanvas({ viewport, series }: { viewport: ViewportState; series?: Series }): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<WebGLRenderer>();
   const scheduler = useMemo(() => new FrameLoadScheduler(), []);
   const [currentFrame, setCurrentFrame] = useState<DecodedFrame>();
+  // Index of the slice actually on screen; it trails viewport.instanceIndex while the next slice loads.
+  const [displayedIndex, setDisplayedIndex] = useState(0);
+  const [canvasSize, setCanvasSize] = useState({ width: 1, height: 1 });
   const [draft, setDraft] = useState<Draft>();
   const [pendingAnnotation, setPendingAnnotation] = useState<PendingAnnotation>();
-  const dragRef = useRef<{ tool: string; start: Point; last: Point; windowWidth: number; windowCenter: number }>();
+  const dragRef = useRef<{ tool: string; start: Point; last: Point; windowWidth: number; windowCenter: number; startClientY: number; startIndex: number }>();
+  // Mirrors displayedIndex for the cine timer; -1 until the series shows its first image.
+  const displayedRef = useRef(-1);
   const activePointers = useRef(new Map<number, Point>());
   const pinchRef = useRef<{ distance: number; midpoint: Point; zoom: number; pan: Point }>();
   const zScrollZoomRef = useRef(false);
-  const { imageSource, studies, selectedSeriesId, addError } = useStudyStore();
+  const imageSource = useStudyStore((state) => state.imageSource);
+  const studies = useStudyStore((state) => state.studies);
+  const selectedSeriesId = useStudyStore((state) => state.selectedSeriesId);
+  const addError = useStudyStore((state) => state.addError);
   const currentSeries = series ?? selectCurrentSeries(studies, selectedSeriesId);
-  const { setFrame, setRenderTime, setInstanceIndex, setWindow, updateCamera, cinePlaying, cineFps } = useViewerStore();
+  const setRenderTime = useViewerStore((state) => state.setRenderTime);
+  const setInstanceIndex = useViewerStore((state) => state.setInstanceIndex);
+  const setWindow = useViewerStore((state) => state.setWindow);
+  const updateCamera = useViewerStore((state) => state.updateCamera);
+  const cinePlaying = useViewerStore((state) => state.cinePlaying);
+  const cineFps = useViewerStore((state) => state.cineFps);
   const activeTool = useUiStore((state) => state.activeTool);
   const addMeasurement = useMeasurementStore((state) => state.addMeasurement);
   const measurements = useMeasurementStore((state) => state.measurements);
@@ -66,13 +87,20 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
     return () => rendererRef.current?.dispose();
   }, [addError]);
 
+  // A new series clears the viewport; moving within a series keeps the previous slice until the next is ready.
+  useEffect(() => {
+    setCurrentFrame(undefined);
+    displayedRef.current = -1;
+  }, [currentSeries, imageSource]);
+
   useEffect(() => {
     if (!imageSource || !currentSeries) return;
-    setCurrentFrame(undefined);
     scheduler.loadPriority(imageSource, currentSeries, viewport.instanceIndex, (index, frame) => {
       if (index === viewport.instanceIndex) {
-        setFrame(index, frame);
         setCurrentFrame(frame);
+        setDisplayedIndex(index);
+        displayedRef.current = index;
+        markFirstImage();
         if (!viewport.windowInitialized) {
           const window = initialWindow(frame);
           setWindow(viewport.id, window.width, window.center);
@@ -80,47 +108,64 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
       }
     }, addError);
     return () => scheduler.cancel();
-  }, [addError, currentSeries, imageSource, scheduler, setFrame, setWindow, viewport.id, viewport.instanceIndex, viewport.windowInitialized]);
+  }, [addError, currentSeries, imageSource, scheduler, setWindow, viewport.id, viewport.instanceIndex, viewport.windowInitialized]);
 
   useEffect(() => {
     if (!cinePlaying || !currentSeries) return;
     const interval = window.setInterval(() => {
-      setInstanceIndex(viewport.id, (viewport.instanceIndex + 1) % currentSeries.instances.length);
+      const index = viewportIndex(viewport.id);
+      // Hold until the slice asked for is on screen, so cine never runs ahead of loading and skips slices.
+      if (displayedRef.current !== index) return;
+      setInstanceIndex(viewport.id, (index + 1) % currentSeries.instances.length);
     }, 1000 / cineFps);
     return () => window.clearInterval(interval);
-  }, [cineFps, cinePlaying, currentSeries, setInstanceIndex, viewport.id, viewport.instanceIndex]);
+  }, [cineFps, cinePlaying, currentSeries, setInstanceIndex, viewport.id]);
 
   const render = useCallback(() => {
     const canvas = canvasRef.current;
     const renderer = rendererRef.current;
     if (!canvas || !renderer || !currentFrame) return;
-    const rect = canvas.getBoundingClientRect();
-    renderer.resize(rect.width, rect.height);
-    setRenderTime(renderer.render(currentFrame, { windowWidth: viewport.windowWidth, windowCenter: viewport.windowCenter, camera: viewport.camera }));
-  }, [currentFrame, setRenderTime, viewport.camera, viewport.windowCenter, viewport.windowWidth]);
+    renderer.resize(canvasSize.width, canvasSize.height);
+    const elapsed = renderer.render(currentFrame, { windowWidth: viewport.windowWidth, windowCenter: viewport.windowCenter, camera: viewport.camera });
+    const now = performance.now();
+    if (now - lastRenderTimePublish > 500) {
+      lastRenderTimePublish = now;
+      setRenderTime(elapsed);
+    }
+  }, [canvasSize, currentFrame, setRenderTime, viewport.camera, viewport.windowCenter, viewport.windowWidth]);
 
   useEffect(() => {
     render();
-    const observer = new ResizeObserver(render);
-    if (canvasRef.current) observer.observe(canvasRef.current);
-    return () => observer.disconnect();
   }, [render]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(([entry]) => setCanvasSize({ width: entry.contentRect.width, height: entry.contentRect.height }));
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !currentSeries) return;
     const onWheel = (event: WheelEvent): void => {
       event.preventDefault();
+      markInteraction();
+      const deltaY = event.deltaMode === 1 ? event.deltaY * 33 : event.deltaY;
       if (zScrollZoomRef.current) {
-        const zoomFactor = Math.exp(-event.deltaY * 0.0015);
-        updateCamera(viewport.id, { zoom: clamp(viewport.camera.zoom * zoomFactor, 0.1, 20) });
+        const zoom = useViewerStore.getState().viewports.find((vp) => vp.id === viewport.id)?.camera.zoom ?? 1;
+        updateCamera(viewport.id, { zoom: clamp(zoom * Math.exp(-deltaY * 0.0015), 0.1, 20) });
         return;
       }
-      setInstanceIndex(viewport.id, clamp(viewport.instanceIndex + (event.deltaY > 0 ? 1 : -1), 0, currentSeries.instances.length - 1));
+      if (!deltaY) return;
+      // One slice per wheel event. Read the latest index from the store: several wheel events can arrive
+      // before React re-renders, and using the rendered index would drop them.
+      setInstanceIndex(viewport.id, clamp(viewportIndex(viewport.id) + Math.sign(deltaY), 0, currentSeries.instances.length - 1));
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [currentSeries, setInstanceIndex, updateCamera, viewport.camera.zoom, viewport.id, viewport.instanceIndex]);
+  }, [currentSeries, setInstanceIndex, updateCamera, viewport.id]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -214,8 +259,9 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
       return { ...base, stats, label: `Mean ${formatNumber(stats.mean)} ${stats.unit}` };
     }
     if (type === 'probe' && points.length >= 1) {
-      const x = clamp(Math.round(points[0].x), 0, currentFrame.metadata.columns - 1);
-      const y = clamp(Math.round(points[0].y), 0, currentFrame.metadata.rows - 1);
+      // Image coordinates run from the pixel's edge, so the pixel under the pointer is the floor.
+      const x = clamp(Math.floor(points[0].x), 0, currentFrame.metadata.columns - 1);
+      const y = clamp(Math.floor(points[0].y), 0, currentFrame.metadata.rows - 1);
       const value = currentFrame.modalityPixels[y * currentFrame.metadata.columns + x];
       const unit = modalityUnit(currentFrame.metadata.modality);
       return { ...base, value, unit, label: `X ${x} Y ${y} ${formatNumber(value)} ${unit}` };
@@ -227,6 +273,7 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
   };
 
   const onPointerDown = (event: React.PointerEvent): void => {
+    markInteraction();
     if (!currentFrame) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = imagePointFromEvent(event);
@@ -240,7 +287,7 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
       setPendingAnnotation({ point, viewportPoint, text: '' });
       return;
     }
-    dragRef.current = { tool: event.button === 1 ? 'pan' : event.button === 2 ? 'zoom' : activeTool, start: point, last: point, windowWidth: viewport.windowWidth, windowCenter: viewport.windowCenter };
+    dragRef.current = { tool: event.button === 1 ? 'pan' : event.button === 2 ? 'zoom' : activeTool, start: point, last: point, windowWidth: viewport.windowWidth, windowCenter: viewport.windowCenter, startClientY: event.clientY, startIndex: viewport.instanceIndex };
     if (['length', 'rectangleRoi', 'ellipseRoi'].includes(activeTool)) setDraft({ type: activeTool as MeasurementType, points: [point, point] });
     if (activeTool === 'probe') {
       const measurement = createMeasurement('probe', [point]);
@@ -273,6 +320,15 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
     }
     const drag = dragRef.current;
     if (!drag || !currentFrame) return;
+    markInteraction();
+    if (drag.tool === 'scroll' && currentSeries) {
+      // Dragging the full height of the viewport runs through the whole stack, with a floor so short series stay controllable.
+      const count = currentSeries.instances.length;
+      const pixelsPerSlice = Math.max(3, event.currentTarget.getBoundingClientRect().height / count);
+      const target = clamp(drag.startIndex + Math.round((event.clientY - drag.startClientY) / pixelsPerSlice), 0, count - 1);
+      if (target !== viewportIndex(viewport.id)) setInstanceIndex(viewport.id, target);
+      return;
+    }
     const point = imagePointFromEvent(event);
     if (!point) return;
     const dx = event.movementX;
@@ -314,7 +370,8 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       />
-      <Overlay frame={currentFrame} viewport={viewport} series={currentSeries} measurements={allOverlayMeasurements} />
+      <Overlay frame={currentFrame} viewport={viewport} series={currentSeries} measurements={allOverlayMeasurements} size={canvasSize} displayedIndex={displayedIndex} />
+      {currentFrame && displayedIndex !== viewport.instanceIndex && <div className="viewport-loading" role="status" aria-label="Loading slice" />}
       {pendingAnnotation && (
         <form
           className="annotation-editor"
@@ -360,22 +417,20 @@ export function ViewportCanvas({ viewport, series }: { viewport: ViewportState; 
       {!currentFrame && <div className="viewport-empty">Preparing {currentSeries?.description ?? 'viewport'}</div>}
     </div>
   );
-}
+});
 
-function Overlay({ frame, viewport, series, measurements }: { frame?: DecodedFrame; viewport: ViewportState; series?: Series; measurements: Measurement[] }): JSX.Element {
-  const canvas = document.querySelector('.viewport-canvas') as HTMLCanvasElement | null;
-  const rect = canvas?.getBoundingClientRect();
-  const width = rect?.width ?? 1;
-  const height = rect?.height ?? 1;
+function Overlay({ frame, viewport, series, measurements, size, displayedIndex }: { frame?: DecodedFrame; viewport: ViewportState; series?: Series; measurements: Measurement[]; size: { width: number; height: number }; displayedIndex: number }): JSX.Element {
+  const { width, height } = size;
   const toVp = (point: Point) => frame ? imageToViewport(point, viewport.camera, width, height, frame.metadata.columns, frame.metadata.rows) : point;
+  const markers = orientationMarkers(frame?.metadata.imageOrientationPatient, viewport.camera);
 
   return (
     <div className="viewport-overlay">
       <div className="ov top-left"><span>{frame?.metadata.patientName ?? '--'}</span><span>{frame?.metadata.patientId ?? '--'}</span></div>
       <div className="ov top-right"><span>{frame?.metadata.modality ?? '--'}</span><span>{series?.description ?? '--'}</span></div>
-      <div className="ov bottom-left"><span>WW {formatNumber(viewport.windowWidth, 0)} WL {formatNumber(viewport.windowCenter, 0)}</span><span>{viewport.camera.zoom.toFixed(2)}x</span><span>{series ? `${viewport.instanceIndex + 1} / ${series.instances.length}` : '--'}</span></div>
+      <div className="ov bottom-left"><span>WW {formatNumber(viewport.windowWidth, 0)} WL {formatNumber(viewport.windowCenter, 0)}</span><span>{viewport.camera.zoom.toFixed(2)}x</span><span>{series ? `${(frame ? displayedIndex : viewport.instanceIndex) + 1} / ${series.instances.length}` : '--'}</span></div>
       <div className="ov bottom-right"><span>Thk {frame?.metadata.sliceThickness ?? '--'}</span><span>Spacing {frame?.metadata.pixelSpacing?.join(' x ') ?? '--'}</span></div>
-      <div className="orientation top">A</div><div className="orientation bottom">P</div><div className="orientation left">R</div><div className="orientation right">L</div>
+      {markers && <><div className="orientation top">{markers.top}</div><div className="orientation bottom">{markers.bottom}</div><div className="orientation left">{markers.left}</div><div className="orientation right">{markers.right}</div></>}
       <svg className="measurement-layer">
         {measurements.map((measurement) => <MeasurementOverlay key={measurement.id} measurement={measurement} toVp={toVp} />)}
       </svg>

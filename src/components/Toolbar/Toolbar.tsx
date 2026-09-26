@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Box, Download, FileText, FlipHorizontal, FlipVertical, Gauge, Keyboard, MoreHorizontal, Move, Pause, Play, RotateCw, Ruler, ScanLine, Search, Square, Target, Trash2, Type, Undo2 } from 'lucide-react';
+import { Activity, Box, ChevronsUpDown, Download, FileText, FlipHorizontal, FlipVertical, Gauge, Keyboard, MoreHorizontal, Move, Pause, Play, RotateCw, Ruler, ScanLine, Search, Square, Target, Trash2, Type, Undo2 } from 'lucide-react';
 import { useMeasurementStore } from '../../store/measurementStore';
 import { useUiStore } from '../../store/uiStore';
 import { useViewerStore } from '../../store/viewerStore';
@@ -7,14 +7,16 @@ import { selectCurrentSeries, useStudyStore } from '../../store/studyStore';
 import type { ToolId } from '../../viewer/tools/BaseTool';
 
 const primaryTools: Array<{ id: ToolId; label: string; shortLabel: string; icon: JSX.Element }> = [
+  { id: 'scroll', label: 'Scroll slices (drag up or down)', shortLabel: 'Scroll', icon: <ChevronsUpDown size={16} /> },
   { id: 'windowLevel', label: 'Window / Level', shortLabel: 'Window', icon: <Gauge size={16} /> },
   { id: 'pan', label: 'Pan', shortLabel: 'Pan', icon: <Move size={16} /> },
   { id: 'zoom', label: 'Zoom', shortLabel: 'Zoom', icon: <Search size={16} /> },
-  { id: 'length', label: 'Length', shortLabel: 'Length', icon: <Ruler size={16} /> },
-  { id: 'annotation', label: 'Annotation', shortLabel: 'Note', icon: <Type size={16} /> }
+  { id: 'length', label: 'Length', shortLabel: 'Length', icon: <Ruler size={16} /> }
 ];
 
+// Annotation lives here so the primary row, which now includes Scroll, still fits on one line on phones.
 const advancedTools: Array<{ id: ToolId; label: string; shortLabel: string; icon: JSX.Element }> = [
+  { id: 'annotation', label: 'Annotation', shortLabel: 'Note', icon: <Type size={16} /> },
   { id: 'angle', label: 'Angle', shortLabel: 'Angle', icon: <ScanLine size={16} /> },
   { id: 'rectangleRoi', label: 'Rectangle ROI', shortLabel: 'Rect', icon: <Square size={16} /> },
   { id: 'ellipseRoi', label: 'Ellipse ROI', shortLabel: 'Ellipse', icon: <Square size={16} /> },
@@ -32,11 +34,14 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
   const toggleMpr = useUiStore((state) => state.toggleMpr);
   const undoLast = useMeasurementStore((state) => state.undoLast);
   const clearForInstance = useMeasurementStore((state) => state.clearForInstance);
-  const { studies, selectedSeriesId } = useStudyStore();
-  const { viewports, cinePlaying, cineFps, setCineFps, toggleCine, updateCamera, resetCamera, setLayout, layout } = useViewerStore();
-  const viewport = viewports[0];
-  const series = selectCurrentSeries(studies, selectedSeriesId);
-  const currentSopUID = series?.instances[viewport.instanceIndex]?.metadata.sopInstanceUID;
+  const series = useStudyStore((state) => selectCurrentSeries(state.studies, state.selectedSeriesId));
+  const cinePlaying = useViewerStore((state) => state.cinePlaying);
+  const cineFps = useViewerStore((state) => state.cineFps);
+  const layout = useViewerStore((state) => state.layout);
+  const { setCineFps, toggleCine, updateCamera, resetCamera, setLayout } = useViewerStore.getState();
+  // Image actions read the viewport when clicked, so the toolbar doesn't re-render on every slice change.
+  const viewportNow = () => useViewerStore.getState().viewports[0];
+  const currentSopUID = () => series?.instances[viewportNow().instanceIndex]?.metadata.sopInstanceUID;
 
   useEffect(() => {
     if (!moreMenuOpen) return;
@@ -54,7 +59,7 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
     toggleExport();
     setMoreMenuOpen(false);
   };
-  const rotate = (): void => updateCamera(viewport.id, { rotation: ((viewport.camera.rotation + 90) % 360) as 0 | 90 | 180 | 270 });
+  const rotate = (): void => { const viewport = viewportNow(); updateCamera(viewport.id, { rotation: ((viewport.camera.rotation + 90) % 360) as 0 | 90 | 180 | 270 }); };
   const cineButton = (
     <button disabled={disabled} title="Cine" className={cinePlaying ? 'active' : ''} onClick={toggleCine}>
       {cinePlaying ? <Pause size={16} /> : <Play size={16} />}<span>Cine</span>
@@ -103,12 +108,12 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
             <div className="more-menu-section">
               <span className="more-menu-title">Image</span>
               <div className="more-tool-grid">
-                <button disabled={disabled} title="Invert" onClick={() => updateCamera(viewport.id, { inverted: !viewport.camera.inverted })}><Activity size={16} /><span>Invert</span></button>
+                <button disabled={disabled} title="Invert" onClick={() => { const viewport = viewportNow(); updateCamera(viewport.id, { inverted: !viewport.camera.inverted }); }}><Activity size={16} /><span>Invert</span></button>
                 <button disabled={disabled} title="Rotate 90" onClick={rotate}><RotateCw size={16} /><span>Rotate</span></button>
-                <button disabled={disabled} title="Flip Horizontal" onClick={() => updateCamera(viewport.id, { flipH: !viewport.camera.flipH })}><FlipHorizontal size={16} /><span>Flip H</span></button>
-                <button disabled={disabled} title="Flip Vertical" onClick={() => updateCamera(viewport.id, { flipV: !viewport.camera.flipV })}><FlipVertical size={16} /><span>Flip V</span></button>
-                <button disabled={disabled} title="Reset view" onClick={() => resetCamera(viewport.id)}><Undo2 size={16} /><span>Reset</span></button>
-                <button disabled={disabled} title="Clear overlays" onClick={() => clearForInstance(currentSopUID)}><Trash2 size={16} /><span>Clear</span></button>
+                <button disabled={disabled} title="Flip Horizontal" onClick={() => { const viewport = viewportNow(); updateCamera(viewport.id, { flipH: !viewport.camera.flipH }); }}><FlipHorizontal size={16} /><span>Flip H</span></button>
+                <button disabled={disabled} title="Flip Vertical" onClick={() => { const viewport = viewportNow(); updateCamera(viewport.id, { flipV: !viewport.camera.flipV }); }}><FlipVertical size={16} /><span>Flip V</span></button>
+                <button disabled={disabled} title="Reset view" onClick={() => resetCamera(viewportNow().id)}><Undo2 size={16} /><span>Reset</span></button>
+                <button disabled={disabled} title="Clear overlays" onClick={() => clearForInstance(currentSopUID())}><Trash2 size={16} /><span>Clear</span></button>
               </div>
             </div>
             <div className="more-menu-section more-menu-row">

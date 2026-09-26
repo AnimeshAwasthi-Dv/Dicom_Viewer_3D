@@ -12,6 +12,11 @@ export class LRUCache<K, V> {
     return this.currentSize;
   }
 
+  /** Membership test that doesn't count as a use. */
+  has(key: K): boolean {
+    return this.values.has(key);
+  }
+
   get(key: K): V | undefined {
     const entry = this.values.get(key);
     if (!entry) return undefined;

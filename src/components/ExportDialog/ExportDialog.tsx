@@ -20,11 +20,11 @@ function downloadJson(fileName: string, data: unknown): void {
 export function ExportDialog(): JSX.Element | null {
   const open = useUiStore((state) => state.exportOpen);
   const setOpen = useUiStore((state) => state.setExportOpen);
-  const { studies, selectedSeriesId } = useStudyStore();
-  const { viewports } = useViewerStore();
+  const studies = useStudyStore((state) => state.studies);
+  const selectedSeriesId = useStudyStore((state) => state.selectedSeriesId);
+  const viewport = useViewerStore((state) => state.viewports[0]);
   const study = studies[0];
   const series = selectCurrentSeries(studies, selectedSeriesId);
-  const viewport = viewports[0];
   const currentInstance = series?.instances[viewport.instanceIndex];
 
   if (!open) return null;

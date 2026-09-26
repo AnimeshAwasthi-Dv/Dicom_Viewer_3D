@@ -176,6 +176,12 @@ function addInt(elements: DicomElementMap, dataSet: dicomParser.DataSet, targetT
   if (value !== undefined) elements.set(targetTag, value);
 }
 
+// SeriesNumber and InstanceNumber are Integer Strings (text). Reading them as binary turns "1 " into 8241.
+function addIntString(elements: DicomElementMap, dataSet: dicomParser.DataSet, targetTag: string, sourceTag: string): void {
+  const value = dataSet.intString(sourceTag);
+  if (value !== undefined && Number.isFinite(value)) elements.set(targetTag, value);
+}
+
 function addDecimalString(elements: DicomElementMap, dataSet: dicomParser.DataSet, targetTag: string, sourceTag: string): void {
   const count = dataSet.numStringValues(sourceTag) ?? 1;
   const values = Array.from({ length: count }, (_, index) => dataSet.floatString(sourceTag, index)).filter((value): value is number => value !== undefined);
@@ -202,8 +208,8 @@ function toMetadataElements(dataSet: dicomParser.DataSet): DicomElementMap {
   addString(elements, dataSet, tagMap.frameOfReferenceUID[0], tagMap.frameOfReferenceUID[1]);
   addString(elements, dataSet, tagMap.photometricInterpretation[0], tagMap.photometricInterpretation[1]);
   addString(elements, dataSet, tagMap.transferSyntaxUID[0], tagMap.transferSyntaxUID[1]);
-  addInt(elements, dataSet, tagMap.seriesNumber[0], tagMap.seriesNumber[1]);
-  addInt(elements, dataSet, tagMap.instanceNumber[0], tagMap.instanceNumber[1]);
+  addIntString(elements, dataSet, tagMap.seriesNumber[0], tagMap.seriesNumber[1]);
+  addIntString(elements, dataSet, tagMap.instanceNumber[0], tagMap.instanceNumber[1]);
   addInt(elements, dataSet, tagMap.samplesPerPixel[0], tagMap.samplesPerPixel[1]);
   addInt(elements, dataSet, tagMap.planarConfiguration[0], tagMap.planarConfiguration[1]);
   addInt(elements, dataSet, tagMap.rows[0], tagMap.rows[1]);

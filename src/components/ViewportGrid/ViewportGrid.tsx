@@ -8,7 +8,8 @@ import { selectCurrentSeries, useStudyStore } from '../../store/studyStore';
 const MprViewer = lazy(() => import('../MprViewer/MprViewer').then(module => ({ default: module.MprViewer })));
 
 export function ViewportGrid({ series }: { series?: Series }): JSX.Element {
-  const { layout, viewports } = useViewerStore();
+  const layout = useViewerStore((state) => state.layout);
+  const viewports = useViewerStore((state) => state.viewports);
   const mprOpen = useUiStore((state) => state.mprOpen);
   const studies = useStudyStore((state) => state.studies);
   if (mprOpen) return <Suspense fallback={<div className="viewport-empty">Loading MPR tools…</div>}><MprViewer series={series} /></Suspense>;

@@ -2,6 +2,8 @@ import type { DecodedFrame, DicomMetadata } from '../../types/dicom';
 import type { Decoder } from './interfaces';
 import { isUncompressedLittleEndian } from '../dicom/TransferSyntax';
 
+export type StoredPixels = NonNullable<DecodedFrame['storedPixels']>;
+
 export function applyRescale(storedValue: number, slope: number, intercept: number): number {
   return storedValue * slope + intercept;
 }
@@ -12,13 +14,13 @@ export function modalityUnit(modality?: string): string {
   return 'value';
 }
 
-function sampleAt(pixels: DecodedFrame['storedPixels'], pixelIndex: number, sampleIndex: number, pixelCount: number, metadata: DicomMetadata): number {
+function sampleAt(pixels: StoredPixels, pixelIndex: number, sampleIndex: number, pixelCount: number, metadata: DicomMetadata): number {
   if (metadata.samplesPerPixel <= 1) return pixels[pixelIndex];
   if (metadata.planarConfiguration === 1) return pixels[pixelIndex + sampleIndex * pixelCount];
   return pixels[pixelIndex * metadata.samplesPerPixel + sampleIndex];
 }
 
-export function toModalityPixels(storedPixels: DecodedFrame['storedPixels'], metadata: DicomMetadata): { modalityPixels: Float32Array; min: number; max: number } {
+export function toModalityPixels(storedPixels: StoredPixels, metadata: DicomMetadata): { modalityPixels: Float32Array; min: number; max: number } {
   const displayPixelCount = metadata.rows * metadata.columns;
   const modalityPixels = new Float32Array(displayPixelCount);
   let min = Number.POSITIVE_INFINITY;
@@ -53,7 +55,7 @@ export class RawDecoder implements Decoder {
     if (pixelData.byteLength < expectedBytes) {
       throw new Error(`PixelData is too small for uncompressed decoding: ${pixelData.byteLength} bytes available, ${expectedBytes} expected.`);
     }
-    let storedPixels: DecodedFrame['storedPixels'];
+    let storedPixels: StoredPixels;
 
     if (metadata.bitsAllocated === 8) {
       storedPixels = metadata.pixelRepresentation === 1 ? new Int8Array(pixelData, 0, storedSampleCount) : new Uint8Array(pixelData, 0, storedSampleCount);

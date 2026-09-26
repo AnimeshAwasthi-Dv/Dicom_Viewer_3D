@@ -39,7 +39,7 @@ export const remoteStateSchema = z.object({
     windowWidth: finite.positive().optional(), windowCenter: finite.optional(),
     camera: cameraSchema.optional()
   }).strict().refine(v => (v.windowWidth === undefined) === (v.windowCenter === undefined), 'Supply both windowWidth and windowCenter')).min(1).max(4),
-  activeTool: z.enum(['windowLevel', 'pan', 'zoom', 'length', 'angle', 'rectangleRoi', 'ellipseRoi', 'probe', 'annotation']).default('windowLevel'),
+  activeTool: z.enum(['scroll', 'windowLevel', 'pan', 'zoom', 'length', 'angle', 'rectangleRoi', 'ellipseRoi', 'probe', 'annotation']).default('windowLevel'),
   cinePlaying: z.boolean().default(false), cineFps: finite.min(1).max(60).default(10),
   mprOpen: z.boolean().default(false),
   mpr: mprSettingsSchema.optional(),

@@ -9,7 +9,9 @@ export function DicomTagsDialog(): JSX.Element | null {
   const [query, setQuery] = useState('');
   const open = useUiStore((state) => state.dicomTagsOpen);
   const setOpen = useUiStore((state) => state.setDicomTagsOpen);
-  const { studies, selectedSeriesId, imageSource } = useStudyStore();
+  const studies = useStudyStore((state) => state.studies);
+  const selectedSeriesId = useStudyStore((state) => state.selectedSeriesId);
+  const imageSource = useStudyStore((state) => state.imageSource);
   const [loadedMetadata, setLoadedMetadata] = useState<DicomMetadata>();
   const viewport = useViewerStore((state) => state.viewports[0]);
   const series = selectCurrentSeries(studies, selectedSeriesId);

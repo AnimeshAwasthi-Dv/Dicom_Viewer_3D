@@ -15,35 +15,35 @@ export function App(): JSX.Element {
   const toggleExport = useUiStore((state) => state.toggleExport);
   const undoLast = useMeasurementStore((state) => state.undoLast);
   const clearForInstance = useMeasurementStore((state) => state.clearForInstance);
-  const { viewports, setInstanceIndex, toggleCine, updateCamera, resetCamera, setLayout } = useViewerStore();
-  const { studies, selectedSeriesId } = useStudyStore();
-  const series = selectCurrentSeries(studies, selectedSeriesId);
-  const viewport = viewports[0];
+  const { setInstanceIndex, toggleCine, updateCamera, resetCamera, setLayout } = useViewerStore.getState();
 
+  // Shortcuts read the latest viewer state when pressed, so this attaches once instead of on every slice change.
   useEffect(() => {
+    const viewportOf = () => useViewerStore.getState().viewports[0];
+    const seriesOf = () => { const { studies, selectedSeriesId } = useStudyStore.getState(); return selectCurrentSeries(studies, selectedSeriesId); };
     const keyboard = new KeyboardShortcutManager({
       setTool: setActiveTool,
       undoLast,
-      toggleInvert: () => updateCamera(viewport.id, { inverted: !viewport.camera.inverted }),
+      toggleInvert: () => { const viewport = viewportOf(); updateCamera(viewport.id, { inverted: !viewport.camera.inverted }); },
       toggleCine,
-      rotate: () => updateCamera(viewport.id, { rotation: ((viewport.camera.rotation + 90) % 360) as 0 | 90 | 180 | 270 }),
-      flipHorizontal: () => updateCamera(viewport.id, { flipH: !viewport.camera.flipH }),
-      flipVertical: () => updateCamera(viewport.id, { flipV: !viewport.camera.flipV }),
-      resetView: () => resetCamera(viewport.id),
+      rotate: () => { const viewport = viewportOf(); updateCamera(viewport.id, { rotation: ((viewport.camera.rotation + 90) % 360) as 0 | 90 | 180 | 270 }); },
+      flipHorizontal: () => { const viewport = viewportOf(); updateCamera(viewport.id, { flipH: !viewport.camera.flipH }); },
+      flipVertical: () => { const viewport = viewportOf(); updateCamera(viewport.id, { flipV: !viewport.camera.flipV }); },
+      resetView: () => resetCamera(viewportOf().id),
       setLayout,
       toggleShortcuts,
       toggleDicomTags,
       exportScreenshot: toggleExport,
-      clearOverlays: () => clearForInstance(series?.instances[viewport.instanceIndex]?.metadata.sopInstanceUID),
+      clearOverlays: () => clearForInstance(seriesOf()?.instances[viewportOf().instanceIndex]?.metadata.sopInstanceUID),
       cancelMeasurement: () => window.dispatchEvent(new CustomEvent('viewer:cancel-measurement')),
-      previousSlice: () => setInstanceIndex(viewport.id, Math.max(0, viewport.instanceIndex - 1)),
-      nextSlice: () => setInstanceIndex(viewport.id, Math.min((series?.instances.length ?? 1) - 1, viewport.instanceIndex + 1)),
-      firstSlice: () => setInstanceIndex(viewport.id, 0),
-      lastSlice: () => setInstanceIndex(viewport.id, Math.max(0, (series?.instances.length ?? 1) - 1))
+      previousSlice: () => { const viewport = viewportOf(); setInstanceIndex(viewport.id, Math.max(0, viewport.instanceIndex - 1)); },
+      nextSlice: () => { const viewport = viewportOf(); setInstanceIndex(viewport.id, Math.min((seriesOf()?.instances.length ?? 1) - 1, viewport.instanceIndex + 1)); },
+      firstSlice: () => setInstanceIndex(viewportOf().id, 0),
+      lastSlice: () => setInstanceIndex(viewportOf().id, Math.max(0, (seriesOf()?.instances.length ?? 1) - 1))
     });
     keyboard.attach();
     return () => keyboard.dispose();
-  }, [clearForInstance, resetCamera, series?.instances, setActiveTool, setInstanceIndex, setLayout, toggleCine, toggleDicomTags, toggleExport, toggleShortcuts, undoLast, updateCamera, viewport]);
+  }, [clearForInstance, resetCamera, setActiveTool, setInstanceIndex, setLayout, toggleCine, toggleDicomTags, toggleExport, toggleShortcuts, undoLast, updateCamera]);
 
   return (
     <ErrorBoundary>

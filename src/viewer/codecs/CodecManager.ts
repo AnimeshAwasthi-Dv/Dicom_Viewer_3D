@@ -20,6 +20,16 @@ export class CodecManager {
     return decoder.decode(metadata, pixelData);
   }
 
+  /** Load the codecs for these transfer syntaxes now instead of on first decode. */
+  async preload(transferSyntaxes: Iterable<string>): Promise<void> {
+    const needed = new Set<Decoder>();
+    for (const syntax of transferSyntaxes) {
+      const decoder = this.decoders.find((candidate) => candidate.canDecode(syntax));
+      if (decoder?.preload) needed.add(decoder);
+    }
+    await Promise.all([...needed].map((decoder) => decoder.preload!()));
+  }
+
   async decodeAsync(metadata: DicomMetadata, pixelData: ArrayBuffer): Promise<DecodedFrame> {
     const decoder = this.decoders.find((candidate) => candidate.canDecode(metadata.transferSyntaxUID));
     if (!decoder) {

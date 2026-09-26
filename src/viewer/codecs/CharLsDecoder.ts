@@ -1,7 +1,7 @@
 import type { DecodedFrame, DicomMetadata } from '../../types/dicom';
 import { TRANSFER_SYNTAX } from '../dicom/TransferSyntax';
 import type { Decoder } from './interfaces';
-import { toModalityPixels } from './RawDecoder';
+import { toModalityPixels, type StoredPixels } from './RawDecoder';
 
 interface JpegLSFrameInfo {
   width: number;
@@ -23,7 +23,7 @@ interface CharLsModule {
 }
 
 type CharLsFactory = () => Promise<CharLsModule>;
-type StoredPixels = DecodedFrame['storedPixels'];
+
 
 let modulePromise: Promise<CharLsModule> | undefined;
 
@@ -38,6 +38,10 @@ async function getCharLs(): Promise<CharLsModule> {
 export class CharLsDecoder implements Decoder {
   canDecode(transferSyntaxUID: string): boolean {
     return transferSyntaxUID === TRANSFER_SYNTAX.jpegLsLossless;
+  }
+
+  async preload(): Promise<void> {
+    await getCharLs();
   }
 
   decode(): DecodedFrame {

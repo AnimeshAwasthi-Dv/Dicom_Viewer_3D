@@ -1,20 +1,22 @@
 import type { DecodedFrame } from '../../types/dicom';
 import type { RenderOptions, RenderingEngine } from '../core/RenderingEngine';
+import { imagePlacement } from '../measurements/CoordinateTransforms';
 
+// Places the image quad with the same flip → clockwise rotation → scale → centre + pan as imagePlacement(),
+// computed in pixels so rotation keeps the image's shape on a non-square viewport.
 const vertexShaderSource = `#version 300 es
 in vec2 a_position;
 in vec2 a_texCoord;
-uniform vec2 u_scale;
-uniform vec2 u_pan;
-uniform float u_rotation;
+uniform vec2 u_halfSize;
+uniform vec2 u_center;
+uniform vec2 u_viewport;
+uniform vec2 u_rotation;
 uniform vec2 u_flip;
 out vec2 v_texCoord;
 void main() {
-  float c = cos(u_rotation);
-  float s = sin(u_rotation);
-  vec2 p = a_position * u_scale;
-  p = vec2(p.x * c - p.y * s, p.x * s + p.y * c) + u_pan;
-  gl_Position = vec4(p, 0.0, 1.0);
+  vec2 local = vec2(a_position.x * u_halfSize.x, -a_position.y * u_halfSize.y);
+  vec2 screen = u_center + vec2(local.x * u_rotation.x - local.y * u_rotation.y, local.x * u_rotation.y + local.y * u_rotation.x);
+  gl_Position = vec4(screen.x / u_viewport.x * 2.0 - 1.0, 1.0 - screen.y / u_viewport.y * 2.0, 0.0, 1.0);
   v_texCoord = vec2(u_flip.x > 0.5 ? 1.0 - a_texCoord.x : a_texCoord.x, u_flip.y > 0.5 ? 1.0 - a_texCoord.y : a_texCoord.y);
 }`;
 
@@ -81,6 +83,8 @@ export class WebGLRenderer implements RenderingEngine {
   private textureKey = '';
   private width = 1;
   private height = 1;
+  private dpr = 1;
+  private readonly uniforms = new Map<string, WebGLUniformLocation | null>();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false });
@@ -111,9 +115,9 @@ export class WebGLRenderer implements RenderingEngine {
   }
 
   resize(width: number, height: number): void {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    this.width = Math.max(1, Math.floor(width * dpr));
-    this.height = Math.max(1, Math.floor(height * dpr));
+    this.dpr = Math.max(1, window.devicePixelRatio || 1);
+    this.width = Math.max(1, Math.floor(width * this.dpr));
+    this.height = Math.max(1, Math.floor(height * this.dpr));
     if (this.canvas.width !== this.width || this.canvas.height !== this.height) {
       this.canvas.width = this.width;
       this.canvas.height = this.height;
@@ -136,22 +140,25 @@ export class WebGLRenderer implements RenderingEngine {
     gl.bindVertexArray(this.vao);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture ?? null);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_image'), 0);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_windowWidth'), options.windowWidth);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_windowCenter'), options.windowCenter);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_rotation'), (options.camera.rotation * Math.PI) / 180);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_invert'), options.camera.inverted ? 1 : 0);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_monochromeOne'), frame.metadata.photometricInterpretation === 'MONOCHROME1' ? 1 : 0);
-    gl.uniform2f(gl.getUniformLocation(this.program, 'u_flip'), options.camera.flipH ? 1 : 0, options.camera.flipV ? 1 : 0);
-
-    const imageAspect = frame.metadata.columns / frame.metadata.rows;
-    const viewportAspect = this.width / this.height;
-    const fitX = imageAspect > viewportAspect ? 1 : imageAspect / viewportAspect;
-    const fitY = imageAspect > viewportAspect ? viewportAspect / imageAspect : 1;
-    gl.uniform2f(gl.getUniformLocation(this.program, 'u_scale'), fitX * options.camera.zoom, fitY * options.camera.zoom);
-    gl.uniform2f(gl.getUniformLocation(this.program, 'u_pan'), (options.camera.pan.x * 2) / this.width, (-options.camera.pan.y * 2) / this.height);
+    gl.uniform1i(this.uniform('u_image'), 0);
+    gl.uniform1f(this.uniform('u_windowWidth'), options.windowWidth);
+    gl.uniform1f(this.uniform('u_windowCenter'), options.windowCenter);
+    gl.uniform1f(this.uniform('u_invert'), options.camera.inverted ? 1 : 0);
+    gl.uniform1f(this.uniform('u_monochromeOne'), frame.metadata.photometricInterpretation === 'MONOCHROME1' ? 1 : 0);
+    gl.uniform2f(this.uniform('u_flip'), options.camera.flipH ? 1 : 0, options.camera.flipV ? 1 : 0);
+    // Placement is worked out in CSS pixels, like the overlay, then converted to device pixels.
+    const place = imagePlacement(options.camera, this.width / this.dpr, this.height / this.dpr, frame.metadata.columns, frame.metadata.rows);
+    gl.uniform2f(this.uniform('u_halfSize'), (frame.metadata.columns / 2) * place.scale * this.dpr, (frame.metadata.rows / 2) * place.scale * this.dpr);
+    gl.uniform2f(this.uniform('u_center'), place.centerX * this.dpr, place.centerY * this.dpr);
+    gl.uniform2f(this.uniform('u_viewport'), this.width, this.height);
+    gl.uniform2f(this.uniform('u_rotation'), place.cos, place.sin);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return performance.now() - started;
+  }
+
+  private uniform(name: string): WebGLUniformLocation | null {
+    if (!this.uniforms.has(name)) this.uniforms.set(name, this.gl.getUniformLocation(this.program, name));
+    return this.uniforms.get(name) ?? null;
   }
 
   dispose(): void {

@@ -34,6 +34,18 @@ export function RemoteSession(): JSX.Element | null {
     let lastStatus = '';
     let lastSentAt = 0;
     let errorMessage: string | undefined;
+    // The manifest is for the session's study, which is almost always the one the first state message names:
+    // download it alongside the event stream instead of after the first message arrives.
+    let prefetchedManifest: Promise<PublicManifest> | undefined = client.request('manifest', { signal: abort.signal }).then(response => response.json() as Promise<PublicManifest>);
+    prefetchedManifest.catch(() => undefined);
+    const fetchManifest = async (expectedStudyId: string): Promise<PublicManifest> => {
+      const prefetched = prefetchedManifest;
+      prefetchedManifest = undefined;
+      const manifest = await prefetched?.catch(() => undefined);
+      if (manifest?.id === expectedStudyId) return manifest;
+      const response = await client.request('manifest', { signal: abort.signal });
+      return await response.json() as PublicManifest;
+    };
 
     async function reportStatus() {
       if (sendingStatus || abort.signal.aborted) return;
@@ -60,8 +72,7 @@ export function RemoteSession(): JSX.Element | null {
           if (next.revision <= appliedRevision) continue;
           if (studyId !== next.studyId) {
             useStudyStore.getState().setLoading({ phase: 'Opening remote study', indexed: 0, total: 0 });
-            const response = await client.request('manifest', { signal: abort.signal });
-            const manifest = await response.json() as PublicManifest;
+            const manifest = await fetchManifest(next.studyId);
             if (abort.signal.aborted) return;
             if (manifest.id !== next.studyId) continue;
             const nextSource = new RemoteImageSource(client, manifest);
@@ -143,5 +154,13 @@ export function RemoteSession(): JSX.Element | null {
     void connect();
     return () => { abort.abort(); source?.dispose(); window.clearInterval(interval); };
   }, []);
-  return status ? <div className="remote-session-status" role="status">{status}</div> : null;
+  // "Connected" only needs a moment on screen; problems stay visible until they clear.
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    setHidden(false);
+    if (status !== 'Connected') return;
+    const timer = window.setTimeout(() => setHidden(true), 2500);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+  return status && !hidden ? <div className="remote-session-status" role="status">{status}</div> : null;
 }

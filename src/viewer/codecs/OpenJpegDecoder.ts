@@ -1,7 +1,7 @@
 import type { DecodedFrame, DicomMetadata } from '../../types/dicom';
 import { TRANSFER_SYNTAX } from '../dicom/TransferSyntax';
 import type { Decoder } from './interfaces';
-import { toModalityPixels } from './RawDecoder';
+import { toModalityPixels, type StoredPixels } from './RawDecoder';
 
 interface J2KFrameInfo {
   width: number;
@@ -24,7 +24,7 @@ interface OpenJpegModule {
 }
 
 type OpenJpegFactory = () => Promise<OpenJpegModule>;
-type StoredPixels = DecodedFrame['storedPixels'];
+
 
 let modulePromise: Promise<OpenJpegModule> | undefined;
 
@@ -44,6 +44,10 @@ function bytesFromDecodedBuffer(decoded: ArrayBuffer | Uint8Array | Uint16Array 
 export class OpenJpegDecoder implements Decoder {
   canDecode(transferSyntaxUID: string): boolean {
     return transferSyntaxUID === TRANSFER_SYNTAX.jpeg2000Lossless || transferSyntaxUID === TRANSFER_SYNTAX.jpeg2000;
+  }
+
+  async preload(): Promise<void> {
+    await getOpenJpeg();
   }
 
   decode(): DecodedFrame {

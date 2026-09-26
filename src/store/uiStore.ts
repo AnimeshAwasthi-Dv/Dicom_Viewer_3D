@@ -21,7 +21,8 @@ interface UiStore {
 }
 
 export const useUiStore = create<UiStore>((set) => ({
-  activeTool: 'windowLevel',
+  // Phones have no scroll wheel, so a one-finger drag changes slices by default there, as in other mobile viewers.
+  activeTool: typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches ? 'scroll' : 'windowLevel',
   roiMode: 'rectangleRoi',
   shortcutsOpen: false,
   dicomTagsOpen: false,

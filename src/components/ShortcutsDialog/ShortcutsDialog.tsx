@@ -2,6 +2,7 @@ import { X } from 'lucide-react';
 import { useUiStore } from '../../store/uiStore';
 
 const shortcuts = [
+  ['K', 'Scroll slices by dragging'],
   ['W', 'Window / Level'],
   ['P', 'Pan'],
   ['Z', 'Zoom'],

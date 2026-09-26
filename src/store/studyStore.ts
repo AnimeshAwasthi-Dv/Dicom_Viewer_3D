@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ImageSource } from '../viewer/dicom/ImageSource';
 import type { Series } from '../viewer/study/Series';
 import type { Study } from '../viewer/study/Study';
+import { resetBackgroundWork } from '../viewer/cache/BackgroundWork';
 
 interface StudyStore {
   imageSource?: ImageSource;
@@ -22,13 +23,19 @@ export const useStudyStore = create<StudyStore>((set) => ({
   errors: [],
   setLoading: (loading) => set({ loading }),
   setSource: (imageSource, studies) =>
-    set({
+    set((state) => {
+      // Release the previous study's decode workers and cached frames.
+      if (state.imageSource && state.imageSource !== imageSource) state.imageSource.dispose?.();
+      // The new study's thumbnails wait for its first image.
+      resetBackgroundWork();
+      return {
       imageSource,
       studies,
       selectedStudyId: studies[0]?.id,
       selectedSeriesId: studies[0]?.series[0]?.id,
       loading: undefined,
       errors: studies.flatMap((study) => study.errors)
+      };
     }),
   selectSeries: (seriesId) => set(state => ({ selectedSeriesId: seriesId, selectedStudyId: state.studies.find(study => study.series.some(series => series.id === seriesId))?.id })),
   addError: (error) => set((state) => ({ errors: [...state.errors.slice(-4), error] })),

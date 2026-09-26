@@ -1,4 +1,3 @@
-import JSZip from 'jszip';
 import type { ParsedDicomFile } from '../../types/dicom';
 import type { DicomWorkerRequest, DicomWorkerResponse } from '../workers/dicomWorker';
 
@@ -50,6 +49,8 @@ export class DicomLoader {
         continue;
       }
 
+      // Loaded on demand: most sessions never open a ZIP, so it stays out of the startup bundle.
+      const { default: JSZip } = await import('jszip');
       const zip = await JSZip.loadAsync(file);
       const entries = Object.values(zip.files).filter((entry) => !entry.dir && !this.isIgnoredEntry(entry.name));
       for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {

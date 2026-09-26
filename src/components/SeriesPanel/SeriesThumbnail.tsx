@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { DecodedFrame } from '../../types/dicom';
 import { useStudyStore } from '../../store/studyStore';
 import type { Series } from '../../viewer/study/Series';
+import { whenIdle } from '../../viewer/cache/BackgroundWork';
+import { RequestPriority } from '../../viewer/cache/FrameRequestQueue';
 
 function displayWindow(frame: DecodedFrame): { width: number; center: number } {
   if (frame.metadata.windowWidth && frame.metadata.windowWidth > 1 && frame.metadata.windowCenter !== undefined) {
@@ -54,18 +56,17 @@ export function SeriesThumbnail({ series }: { series: Series }): JSX.Element {
     const canvas = canvasRef.current;
     const instance = series.instances.find((item) => item.id === series.thumbnailInstanceId) ?? series.instances[Math.floor(series.instances.length / 2)];
     if (!canvas || !imageSource || !instance) return;
-    let cancelled = false;
+    const abort = new AbortController();
     setFailed(false);
-    imageSource.getFrame(instance.id)
+    // Waits for the first diagnostic image and for the user to stop scrolling, then loads at the lowest priority.
+    whenIdle(() => imageSource.getFrame(instance.id, { priority: RequestPriority.Thumbnail, signal: abort.signal }), abort.signal)
       .then((frame) => {
-        if (!cancelled) renderThumbnail(canvas, frame);
+        if (!abort.signal.aborted) renderThumbnail(canvas, frame);
       })
       .catch(() => {
-        if (!cancelled) setFailed(true);
+        if (!abort.signal.aborted) setFailed(true);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => abort.abort();
   }, [imageSource, series]);
 
   return (

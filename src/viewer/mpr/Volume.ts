@@ -1,6 +1,7 @@
 import type { DecodedFrame, DicomMetadata } from '../../types/dicom';
 import type { ImageSource } from '../dicom/ImageSource';
 import type { Series } from '../study/Series';
+import { deviceProfile } from '../core/DeviceProfile';
 
 export type MprPlane = 'axial' | 'coronal' | 'sagittal';
 
@@ -9,7 +10,8 @@ export interface DicomVolume {
   height: number;
   depth: number;
   spacing: [number, number, number];
-  data: Float32Array;
+  /** Int16 when every slice holds whole numbers in range (CT HU, most MR): half the memory of Float32. */
+  data: Float32Array | Int16Array;
   min: number;
   max: number;
   windowWidth: number;
@@ -53,26 +55,44 @@ export async function buildDicomVolume(
 ): Promise<DicomVolume> {
   if (series.instances.length < 2) throw new Error('3D MPR requires a series with at least two slices.');
   signal?.throwIfAborted();
-  const first = await source.getFrame(series.instances[0].id);
+  const first = await source.getFrame(series.instances[0].id, { signal });
   signal?.throwIfAborted();
   const width = first.metadata.columns;
   const height = first.metadata.rows;
   const depth = series.instances.length;
-  const data = new Float32Array(width * height * depth);
+  const integral = (frame: DecodedFrame) => Number.isInteger(frame.metadata.rescaleSlope) && Number.isInteger(frame.metadata.rescaleIntercept) && frame.metadata.samplesPerPixel === 1 && frame.min >= -32768 && frame.max <= 32767;
+  let data: Float32Array | Int16Array = integral(first) ? new Int16Array(width * height * depth) : new Float32Array(width * height * depth);
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
-  for (let start = 0; start < depth; start += 4) {
-    signal?.throwIfAborted();
-    const batch = await Promise.all(series.instances.slice(start, start + 4).map((instance, offset) => start + offset === 0 ? first : source.getFrame(instance.id)));
-    signal?.throwIfAborted();
-    batch.forEach((frame, offset) => {
-      if (frame.metadata.columns !== width || frame.metadata.rows !== height || frame.metadata.samplesPerPixel !== 1) throw new Error('3D MPR currently supports single-channel series with matching slice dimensions.');
-      data.set(frame.modalityPixels, (start + offset) * width * height);
-      min = Math.min(min, frame.min);
-      max = Math.max(max, frame.max);
-    });
-    onProgress?.(Math.min(start + 4, depth), depth);
-  }
+  // A pool of loaders, each taking the next slice as it finishes, keeps the download queue full: fixed batches wait
+  // for their slowest slice. Slices are copied in as they arrive, so at most `parallel` decoded frames are held here.
+  const parallel = source.mode === 'remote' ? deviceProfile().remoteRequests.total : deviceProfile().decodeWorkers + 1;
+  let next = 1;
+  let loaded = 1;
+  const place = (frame: DecodedFrame, index: number) => {
+    if (frame.metadata.columns !== width || frame.metadata.rows !== height || frame.metadata.samplesPerPixel !== 1) throw new Error('3D MPR currently supports single-channel series with matching slice dimensions.');
+    // A slice that doesn't fit Int16 switches the whole volume to Float32.
+    if (data instanceof Int16Array && !integral(frame)) data = Float32Array.from(data);
+    data.set(frame.modalityPixels, index * width * height);
+    min = Math.min(min, frame.min);
+    max = Math.max(max, frame.max);
+  };
+  place(first, 0);
+  onProgress?.(1, depth);
+  let failed = false;
+  const loader = async () => {
+    while (next < depth && !failed) {
+      signal?.throwIfAborted();
+      const index = next++;
+      const frame = await source.getFrame(series.instances[index].id, { signal });
+      signal?.throwIfAborted();
+      place(frame, index);
+      loaded++;
+      // Every few slices is enough for a progress bar and spares the MPR panel hundreds of re-renders.
+      if (loaded % 4 === 0 || loaded === depth) onProgress?.(loaded, depth);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(parallel, depth - 1) }, () => loader().catch((error: unknown) => { failed = true; throw error; })));
 
   const [rowSpacing = 1, columnSpacing = 1] = first.metadata.pixelSpacing ?? [1, 1];
   const sliceSpacing = deriveSliceSpacing(series, first);

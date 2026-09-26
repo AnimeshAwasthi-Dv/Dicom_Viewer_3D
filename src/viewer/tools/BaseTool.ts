@@ -1,4 +1,4 @@
-export type ToolId = 'windowLevel' | 'pan' | 'zoom' | 'length' | 'angle' | 'rectangleRoi' | 'ellipseRoi' | 'probe' | 'annotation';
+export type ToolId = 'scroll' | 'windowLevel' | 'pan' | 'zoom' | 'length' | 'angle' | 'rectangleRoi' | 'ellipseRoi' | 'probe' | 'annotation';
 
 export interface PointerToolContext {
   viewportId: string;

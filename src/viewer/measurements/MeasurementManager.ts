@@ -38,8 +38,9 @@ export function computeRoiStats(frame: DecodedFrame, a: Point, b: Point, ellipse
   return {
     area,
     mean,
-    min: Math.min(...values),
-    max: Math.max(...values),
+    // A loop, not Math.min(...values): spreading a large ROI's pixels overflows the call stack.
+    min: values.reduce((low, value) => (value < low ? value : low), Infinity),
+    max: values.reduce((high, value) => (value > high ? value : high), -Infinity),
     stdDev: Math.sqrt(variance),
     unit: modalityUnit(frame.metadata.modality)
   };

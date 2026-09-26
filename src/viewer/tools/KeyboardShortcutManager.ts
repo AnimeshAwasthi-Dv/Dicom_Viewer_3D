@@ -28,6 +28,7 @@ export class KeyboardShortcutManager {
     const handled = true;
     if (event.ctrlKey && key === 'z') this.actions.undoLast();
     else if (key === 'w') this.actions.setTool('windowLevel');
+    else if (key === 'k') this.actions.setTool('scroll');
     else if (key === 'p') this.actions.setTool('pan');
     else if (key === 'z') this.actions.setTool('zoom');
     else if (key === 'm') this.actions.setTool('length');

@@ -3,7 +3,7 @@ import compression from 'compression';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { z, ZodError } from 'zod';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Config } from './config';
 import { sourceLocation, type Modality } from './config';
 import { digest, matchesSecret, snapshot, type Sessions, type SessionRecord } from './sessions';
@@ -15,6 +15,8 @@ export interface ApiDependencies {
   sessions: Sessions;
   manifest(id: string): Promise<StudyManifest>;
   sign(key: string): Promise<string>;
+  /** The source object's version (ETag, plus VersionId when versioning is on), or undefined when it doesn't exist. */
+  sourceVersion(bucket: string, key: string): Promise<string | undefined>;
   enqueue(id: string, zipKey: string, modality?: Modality): Promise<void>;
   job(id: string): Promise<{ status: string; progress: unknown } | undefined>;
   publish(id: string): Promise<void>;
@@ -26,6 +28,16 @@ class HttpError extends Error {
 }
 const idSchema = z.uuid();
 const bearer = (header?: string) => header?.startsWith('Bearer ') ? header.slice(7) : '';
+
+/**
+ * The import ID for one version of one source ZIP. Asking to import the same archive again returns the study already
+ * extracted from it instead of unpacking it again; replacing the ZIP (a new ETag) gives a new ID and a fresh import.
+ */
+export function studyIdFor(bucket: string, key: string, version: string): string {
+  const hex = createHash('sha256').update(`${bucket}\n${key}\n${version}`).digest('hex');
+  // Shaped as an RFC 9562 version 8 (custom) UUID so it passes the same validation as other IDs.
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 export function createApp(deps: ApiDependencies) {
   const { config, sessions } = deps;
@@ -67,9 +79,18 @@ export function createApp(deps: ApiDependencies) {
     let location;
     try { location = sourceLocation(config, modality); } catch { throw new HttpError(400, 'Modality storage has not been configured'); }
     if (!zipKey.startsWith(location.prefix) || !zipKey.toLowerCase().endsWith('.zip')) throw new HttpError(400, 'ZIP key must be within the configured modality prefix and end in .zip');
-    const id = randomUUID();
+    const version = await deps.sourceVersion(location.bucket, zipKey);
+    if (!version) throw new HttpError(404, 'ZIP not found');
+    const id = studyIdFor(location.bucket, zipKey, version);
+    const statusUrl = `/api/v1/studies/${id}`;
+    const existing = await deps.job(id);
+    // Already imported or importing: reuse it. Only a failed import runs again.
+    if (existing && existing.status !== 'failed') {
+      res.status(200).json({ id, status: existing.status, reused: true, statusUrl });
+      return;
+    }
     await deps.enqueue(id, zipKey, modality);
-    res.status(202).json({ id, status: 'queued', statusUrl: `/api/v1/studies/${id}` });
+    res.status(202).json({ id, status: 'queued', reused: false, statusUrl });
   });
   app.get('/api/v1/studies/:id', service, async (req, res) => {
     const id = idSchema.parse(req.params.id);
@@ -169,7 +190,14 @@ export function createApp(deps: ApiDependencies) {
     await refresh();
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
-  app.use(express.static(path.resolve('dist'), { index: 'index.html' }));
+  app.use(express.static(path.resolve('dist'), {
+    index: 'index.html',
+    // Built assets have content hashes in their names, so repeat visits (and every decode worker) can reuse them
+    // without asking; index.html is revalidated so a deploy takes effect at once.
+    setHeaders: (res, filePath) => {
+      res.setHeader('Cache-Control', filePath.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache');
+    }
+  }));
   const errors: ErrorRequestHandler = (error: unknown, _req, res, _next) => {
     if (res.headersSent) { res.end(); return; }
     if (error instanceof ZodError) { res.status(400).json({ error: 'Invalid request', issues: error.issues.map(issue => ({ path: issue.path, message: issue.message })) }); return; }

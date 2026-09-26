@@ -1,17 +1,37 @@
 import type { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 import unzipper from 'unzipper';
 import { DicomParser } from '../src/viewer/dicom/DicomParser';
+import { isUncompressedLittleEndian } from '../src/viewer/dicom/TransferSyntax';
 import type { StudyManifest } from '../src/types/remote';
 
 export interface ImportLimits { maxEntries: number; maxEntryBytes: number; maxExpandedBytes: number }
+export type WriteObject = (key: string, bytes: Uint8Array, contentType: string, contentEncoding?: string) => Promise<void>;
+
+const gzipAsync = promisify(gzip);
+// Uploads in flight while the archive keeps unpacking; S3 latency, not CPU, dominates a serial import.
+const PARALLEL_WRITES = 8;
+
+/**
+ * Uncompressed pixel data is stored gzip-encoded: S3 serves it with Content-Encoding: gzip and the browser inflates it
+ * natively, so a raw CT slice downloads at about 45% of its size with nothing to change in the viewer. Level 1 is
+ * nearly as small as the default level at a third of the CPU. Compressed transfer syntaxes are stored as they are.
+ */
+export async function encodeForStorage(data: Uint8Array, transferSyntaxUID: string): Promise<{ bytes: Uint8Array; contentEncoding?: string }> {
+  if (!isUncompressedLittleEndian(transferSyntaxUID)) return { bytes: data };
+  const packed = await gzipAsync(data, { level: 1 });
+  // Not worth an encoding header unless it saves at least a tenth.
+  return packed.byteLength <= data.byteLength * 0.9 ? { bytes: packed, contentEncoding: 'gzip' } : { bytes: data };
+}
 
 export async function importZip(
   source: Readable,
   id: string,
   prefix: string,
   limits: ImportLimits,
-  write: (key: string, bytes: Uint8Array, contentType: string) => Promise<void>,
+  write: WriteObject,
   progress: (value: { indexed: number; skipped: number }) => Promise<void>
 ): Promise<StudyManifest> {
   const archive = source.pipe(unzipper.Parse({ forceStream: true }));
@@ -22,6 +42,12 @@ export async function importZip(
   let expanded = 0;
   let entries = 0;
   const parser = new DicomParser();
+  const writes = new Set<Promise<void>>();
+  let writeError: unknown;
+  const upload = async (key: string, data: Uint8Array, transferSyntaxUID: string) => {
+    const { bytes, contentEncoding } = await encodeForStorage(data, transferSyntaxUID);
+    await write(key, bytes, 'application/dicom', contentEncoding);
+  };
   try {
     for await (const value of archive) {
       const entry = value as unzipper.Entry;
@@ -50,16 +76,24 @@ export async function importZip(
       const name = createHash('sha256').update(sopId).digest('hex');
       const key = `${prefix}${id}/instances/${name}.dcm`;
       // Keys are generated from UIDs: archive paths never become filesystem/S3 paths.
-      await write(key, data, 'application/dicom');
+      const pending = upload(key, data, parsed.metadata.transferSyntaxUID).catch((error: unknown) => { writeError ??= error; });
+      writes.add(pending);
+      void pending.finally(() => writes.delete(pending));
+      if (writes.size >= PARALLEL_WRITES) await Promise.race(writes);
+      if (writeError) throw writeError;
       // Detailed tags are fetched with the selected frame, not repeated in the startup index.
       delete parsed.metadata.rawTags;
       manifest.instances.push({ key, metadata: parsed.metadata });
       if (manifest.instances.length % 20 === 0) await progress({ indexed: manifest.instances.length, skipped: manifest.skippedFiles });
     }
+    await Promise.all(writes);
+    if (writeError) throw writeError;
     if (!manifest.instances.length) throw new Error('Archive contains no supported single-frame DICOM images');
     await progress({ indexed: manifest.instances.length, skipped: manifest.skippedFiles });
     return manifest;
   } finally {
+    // Never leave uploads running after a failed import.
+    await Promise.allSettled(writes);
     source.off('error', onError);
     source.destroy();
     archive.destroy();

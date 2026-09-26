@@ -15,6 +15,10 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); })));
 });
 async function harness() {
+  // Fake import queue and source bucket: object versions by key, job states by study ID.
+  const versions = new Map<string, string>([['studies/a.zip', '"etag-1"']]);
+  const jobs = new Map<string, string>([[studyId, 'completed']]);
+  const enqueued: string[] = [];
   const records = new Map<string, SessionRecord>();
   const events = new EventEmitter();
   const statuses = new Map<string, string>();
@@ -38,7 +42,9 @@ async function harness() {
   };
   const app = createApp({
     config, sessions, manifest: async () => manifest, sign: async key => `https://s3.example.com/${key}`,
-    enqueue: async () => undefined, job: async id => id === studyId ? { status: 'completed', progress: 100 } : undefined,
+    sourceVersion: async (_bucket, key) => versions.get(key),
+    enqueue: async id => { enqueued.push(id); jobs.set(id, 'waiting'); },
+    job: async id => jobs.has(id) ? { status: jobs.get(id)!, progress: 0 } : undefined,
     publish: async id => { events.emit(id); },
     subscribe: (id, notify) => { events.on(id, notify); return () => { events.off(id, notify); }; }, healthy: () => true
   });
@@ -57,7 +63,7 @@ async function harness() {
     const token = new URLSearchParams(new URL(session.viewerUrl).hash.slice(1)).get('token')!;
     return { ...session, token };
   };
-  return { request, create };
+  return { request, create, versions, jobs, enqueued };
 }
 describe('viewer API', () => {
   it('requires service authentication and constrains source keys', async () => {
@@ -66,6 +72,25 @@ describe('viewer API', () => {
     expect((await request('/api/v1/studies', 'POST', { zipKey: 'other/a.zip' })).status).toBe(400);
     expect((await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' })).status).toBe(202);
     expect((await request('/api/v1/studies', 'POST', { modality: 'MRI', zipKey: 'MRI/a.zip' })).status).toBe(400);
+    expect((await request('/api/v1/studies', 'POST', { zipKey: 'studies/missing.zip' })).status).toBe(404);
+  });
+  it('imports a ZIP once and reuses the study on later requests', async () => {
+    const { request, enqueued, jobs, versions } = await harness();
+    const first = await (await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' })).json() as { id: string; reused: boolean };
+    expect(first.reused).toBe(false);
+    const again = await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({ id: first.id, reused: true });
+    expect(enqueued).toEqual([first.id]);
+    // A failed import runs again under the same ID.
+    jobs.set(first.id, 'failed');
+    expect((await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' })).status).toBe(202);
+    expect(enqueued).toEqual([first.id, first.id]);
+    // A replaced ZIP is a new version: new ID, fresh import.
+    versions.set('studies/a.zip', '"etag-2"');
+    const replaced = await (await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' })).json() as { id: string };
+    expect(replaced.id).not.toBe(first.id);
+    expect((await request(`/api/v1/studies/${replaced.id}`)).status).toBe(200);
   });
   it('scopes viewer credentials to one session and prevents them from controlling sessions', async () => {
     const { request, create } = await harness();

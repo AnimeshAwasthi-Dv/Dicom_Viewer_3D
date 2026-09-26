@@ -2,7 +2,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
-import { importZip } from '../importer';
+import { gunzipSync } from 'node:zlib';
+import { encodeForStorage, importZip } from '../importer';
 import { dicomFile } from './fixtures';
 
 const limits = { maxEntries: 20, maxEntryBytes: 10000, maxExpandedBytes: 20000 };
@@ -20,6 +21,36 @@ describe('ZIP import', () => {
     expect(result.instances[0].metadata.rows).toBe(2);
     for (const instance of result.instances) expect(instance.key).toMatch(/^derived\/study-id\/instances\/[a-f0-9]{64}\.dcm$/);
     expect(write).toHaveBeenCalledTimes(2);
+  });
+  it('reads SeriesNumber and InstanceNumber as text, not binary', async () => {
+    const result = await importZip(await archive({ 'a.dcm': dicomFile('1.2.3.4.1', { series: '12', instance: '20' }), 'b.dcm': dicomFile('1.2.3.4.2', { series: '1', instance: '3' }) }), 'id', 'derived/', limits, async () => undefined, async () => undefined);
+    expect(result.instances.map(instance => [instance.metadata.seriesNumber, instance.metadata.instanceNumber])).toEqual([[12, 20], [1, 3]]);
+  });
+  it('stores uncompressed DICOM gzip-encoded, and it inflates back to the original file', async () => {
+    const original = dicomFile('1.2.3.4.9');
+    const { bytes, contentEncoding } = await encodeForStorage(new Uint8Array(4096), '1.2.840.10008.1.2.1');
+    expect(contentEncoding).toBe('gzip');
+    expect(gunzipSync(bytes)).toEqual(Buffer.alloc(4096));
+    // Already-compressed pixel data is stored untouched.
+    expect(await encodeForStorage(original, '1.2.840.10008.1.2.4.80')).toEqual({ bytes: original });
+  });
+  it('writes each instance once, uploading in parallel', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const write = vi.fn(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight--;
+    });
+    const files = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [`${index}.dcm`, dicomFile(`1.2.3.4.${index + 1}`)]));
+    const result = await importZip(await archive(files), 'id', 'derived/', { ...limits, maxEntries: 20 }, write, async () => undefined);
+    expect(result.instances).toHaveLength(12);
+    expect(write).toHaveBeenCalledTimes(12);
+    expect(peak).toBeGreaterThan(1);
+    expect(inFlight).toBe(0);
+  });
+  it('fails the import when an upload fails', async () => {
+    await expect(importZip(await archive({ 'a.dcm': dicomFile() }), 'id', 'derived/', limits, async () => { throw new Error('S3 down'); }, async () => undefined)).rejects.toThrow('S3 down');
   });
   it('rejects expanded entries over the configured limit', async () => {
     await expect(importZip(await archive({ 'large.dcm': Buffer.alloc(1000) }), 'id', 'derived/', { ...limits, maxEntryBytes: 100 }, async () => undefined, async () => undefined)).rejects.toThrow('size limits');

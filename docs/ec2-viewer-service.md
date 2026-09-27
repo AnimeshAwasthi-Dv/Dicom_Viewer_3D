@@ -28,7 +28,7 @@ The example configuration maps your supplied bucket names as follows. Confirm th
 
 For example, an input is `CT/study-123/archive.zip`, not an `s3://` URL. Prefixes and case must match your real keys. The worker reads the original archive without changing it and writes extracted DICOM objects plus `manifest.json` under `s3://decxpert-studies/viewer-derived/<import-id>/`. Change `S3_BUCKET` if derived objects should live in a separate bucket. Only the derived bucket requires browser CORS.
 
-An import's ID is derived from the source bucket, key and object version (ETag, plus VersionId when bucket versioning is on). Posting the same ZIP again returns the existing study immediately (`200`, `"reused": true`) instead of unpacking it again, so the portal can call import every time a clinician opens a scan. A failed import runs again under the same ID. Replacing the ZIP at the same key gives a new ID and a fresh import. Do not overwrite a source ZIP while its import is running.
+An import's ID is derived from the source bucket, key, object version (ETag, plus VersionId when bucket versioning is on), and the derived-frame format version. Posting the same ZIP again returns the existing study immediately (`200`, `"reused": true`) instead of unpacking it again, so the portal can call import every time a clinician opens a scan. A failed import runs again under the same ID. Replacing the ZIP at the same key, or upgrading the derived-frame format, gives a new ID and a fresh import while preserving the prior derived objects. Do not overwrite a source ZIP while its import is running.
 
 ## EC2 deployment
 

@@ -29,12 +29,18 @@ class HttpError extends Error {
 const idSchema = z.uuid();
 const bearer = (header?: string) => header?.startsWith('Bearer ') ? header.slice(7) : '';
 
+// Change this only when the representation of derived frames changes. It makes
+// existing source archives import into a new, isolated derived prefix instead
+// of reusing an incompatible (or less efficient) prior representation.
+const DERIVED_FRAME_FORMAT_VERSION = 'gzip-v1';
+
 /**
  * The import ID for one version of one source ZIP. Asking to import the same archive again returns the study already
- * extracted from it instead of unpacking it again; replacing the ZIP (a new ETag) gives a new ID and a fresh import.
+ * extracted from it instead of unpacking it again; replacing the ZIP (a new ETag), or changing the
+ * derived-frame format, gives a new ID and a fresh import.
  */
 export function studyIdFor(bucket: string, key: string, version: string): string {
-  const hex = createHash('sha256').update(`${bucket}\n${key}\n${version}`).digest('hex');
+  const hex = createHash('sha256').update(`${DERIVED_FRAME_FORMAT_VERSION}\n${bucket}\n${key}\n${version}`).digest('hex');
   // Shaped as an RFC 9562 version 8 (custom) UUID so it passes the same validation as other IDs.
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

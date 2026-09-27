@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
-import { createApp } from '../app';
+import { createApp, studyIdFor } from '../app';
 import type { Sessions, SessionRecord } from '../sessions';
 import { digest } from '../sessions';
 import { config, manifest, studyId } from './fixtures';
@@ -66,6 +66,15 @@ async function harness() {
   return { request, create, versions, jobs, enqueued };
 }
 describe('viewer API', () => {
+  it('uses a new import ID when the derived-frame format changes', () => {
+    const bucket = 'test-bucket';
+    const key = 'studies/a.zip';
+    const version = '"etag-1"';
+    const legacyHash = createHash('sha256').update(`${bucket}\n${key}\n${version}`).digest('hex');
+    const legacyId = `${legacyHash.slice(0, 8)}-${legacyHash.slice(8, 12)}-8${legacyHash.slice(13, 16)}-${((parseInt(legacyHash[16], 16) & 0x3) | 0x8).toString(16)}${legacyHash.slice(17, 20)}-${legacyHash.slice(20, 32)}`;
+    expect(studyIdFor(bucket, key, version)).not.toBe(legacyId);
+  });
+
   it('requires service authentication and constrains source keys', async () => {
     const { request } = await harness();
     expect((await request('/api/v1/studies', 'POST', { zipKey: 'studies/a.zip' }, 'bad')).status).toBe(401);

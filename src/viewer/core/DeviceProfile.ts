@@ -8,8 +8,9 @@ export interface DeviceProfile {
   /** Slices loaded ahead of / behind the current one while the user scrolls in one direction. */
   prefetchAhead: number;
   prefetchBehind: number;
-  /** Concurrent downloads, and how many of those may be prefetch, so the slice on screen always has bandwidth. */
-  remoteRequests: { total: number; background: number };
+  /** Bounds on concurrent downloads; the network estimate picks a value in between. S3 serves HTTP/1.1, and browsers
+   *  open at most 6 connections per host, so more than 6 would only queue inside the browser. */
+  remoteRequests: { min: number; max: number };
 }
 
 let profile: DeviceProfile | undefined;
@@ -32,7 +33,7 @@ export function deviceProfile(): DeviceProfile {
     prefetchRadius,
     prefetchAhead: Math.round(prefetchRadius * 1.5),
     prefetchBehind: Math.round(prefetchRadius / 2),
-    remoteRequests: constrained ? { total: 4, background: 2 } : { total: 6, background: 4 }
+    remoteRequests: { min: 2, max: constrained ? 4 : 6 }
   };
   return profile;
 }

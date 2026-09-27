@@ -1,5 +1,6 @@
 import { DicomParser } from '../dicom/DicomParser';
 import { CodecManager } from '../codecs/CodecManager';
+import { expandPreview } from '../dicom/PreviewFormat';
 import type { DicomMetadata } from '../../types/dicom';
 
 export interface DicomWorkerFile {
@@ -21,6 +22,8 @@ export interface DicomDecodeRequest {
   metadata?: DicomMetadata;
   pixelData?: ArrayBuffer;
   expectedSopInstanceUID?: string;
+  /** `buffer` is a low-resolution preview of the slice this metadata describes (see PreviewFormat). */
+  previewOf?: DicomMetadata;
 }
 
 /** Load codecs ahead of the first decode. */
@@ -70,7 +73,9 @@ async function decode(request: DicomDecodeRequest): Promise<DicomDecodeResponse>
   try {
     let metadata = request.metadata;
     let pixelData = request.pixelData;
-    if (request.buffer) {
+    if (request.buffer && request.previewOf) {
+      ({ metadata, pixelData } = expandPreview(request.buffer, request.previewOf));
+    } else if (request.buffer) {
       const file = parser.parse(request.buffer, 'remote.dcm');
       if (!file.pixelData || file.error) throw new Error(file.error ?? 'No pixel data returned.');
       metadata = file.metadata;
@@ -79,7 +84,8 @@ async function decode(request: DicomDecodeRequest): Promise<DicomDecodeResponse>
     if (!metadata || !pixelData) throw new Error('No image returned by parser.');
     if (request.expectedSopInstanceUID && metadata.sopInstanceUID !== request.expectedSopInstanceUID) throw new Error('Image identity does not match the requested instance.');
     const frame = await codecs.decodeAsync(metadata, pixelData);
-    return { id: request.id, frame: { metadata: frame.metadata, modalityPixels: frame.modalityPixels, min: frame.min, max: frame.max, decodeTimeMs: frame.decodeTimeMs } };
+    // The preview decodes as uncompressed; report the slice's own metadata, not the stand-in transfer syntax.
+    return { id: request.id, frame: { metadata: request.previewOf ?? frame.metadata, modalityPixels: frame.modalityPixels, min: frame.min, max: frame.max, decodeTimeMs: frame.decodeTimeMs } };
   } catch (error) {
     return { id: request.id, error: error instanceof Error ? error.message : 'Unable to decode image.' };
   }

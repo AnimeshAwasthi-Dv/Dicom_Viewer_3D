@@ -21,6 +21,12 @@ export class DecodePool {
     return this.post({ id: crypto.randomUUID(), kind: 'decode', buffer, expectedSopInstanceUID }, [buffer]);
   }
 
+  /** Decode a low-resolution preview (see PreviewFormat) to a full-size frame of the slice `metadata` describes. */
+  decodePreview(buffer: ArrayBuffer, metadata: DicomMetadata): Promise<DecodedFrame> {
+    const slim = { ...metadata, rawTags: undefined };
+    return this.post({ id: crypto.randomUUID(), kind: 'decode', buffer, previewOf: slim }, [buffer]).then(frame => ({ ...frame, metadata, preview: true }));
+  }
+
   /** Decode already-extracted pixel data (the buffer is transferred to the worker). */
   decodePixels(metadata: DicomMetadata, pixelData: ArrayBuffer): Promise<DecodedFrame> {
     // The tag list isn't needed to decode, so it isn't copied to the worker.

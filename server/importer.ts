@@ -5,6 +5,7 @@ import { gzip } from 'node:zlib';
 import unzipper from 'unzipper';
 import { DicomParser } from '../src/viewer/dicom/DicomParser';
 import { isUncompressedLittleEndian } from '../src/viewer/dicom/TransferSyntax';
+import { encodePreview } from '../src/viewer/dicom/PreviewFormat';
 import type { StudyManifest } from '../src/types/remote';
 
 export interface ImportLimits { maxEntries: number; maxEntryBytes: number; maxExpandedBytes: number }
@@ -44,9 +45,10 @@ export async function importZip(
   const parser = new DicomParser();
   const writes = new Set<Promise<void>>();
   let writeError: unknown;
-  const upload = async (key: string, data: Uint8Array, transferSyntaxUID: string) => {
+  const upload = async (key: string, data: Uint8Array, transferSyntaxUID: string, preview?: { key: string; bytes: Uint8Array }) => {
     const { bytes, contentEncoding } = await encodeForStorage(data, transferSyntaxUID);
     await write(key, bytes, 'application/dicom', contentEncoding);
+    if (preview) await write(preview.key, await gzipAsync(preview.bytes, { level: 1 }), 'application/octet-stream', 'gzip');
   };
   try {
     for await (const value of archive) {
@@ -75,15 +77,18 @@ export async function importZip(
       seen.add(sopId);
       const name = createHash('sha256').update(sopId).digest('hex');
       const key = `${prefix}${id}/instances/${name}.dcm`;
+      // Large uncompressed slices also get a small preview the viewer shows while the full slice downloads.
+      const previewBytes = encodePreview(parsed.metadata, parsed.pixelData);
+      const preview = previewBytes ? { key: `${prefix}${id}/previews/${name}.bin`, bytes: previewBytes } : undefined;
       // Keys are generated from UIDs: archive paths never become filesystem/S3 paths.
-      const pending = upload(key, data, parsed.metadata.transferSyntaxUID).catch((error: unknown) => { writeError ??= error; });
+      const pending = upload(key, data, parsed.metadata.transferSyntaxUID, preview).catch((error: unknown) => { writeError ??= error; });
       writes.add(pending);
       void pending.finally(() => writes.delete(pending));
       if (writes.size >= PARALLEL_WRITES) await Promise.race(writes);
       if (writeError) throw writeError;
       // Detailed tags are fetched with the selected frame, not repeated in the startup index.
       delete parsed.metadata.rawTags;
-      manifest.instances.push({ key, metadata: parsed.metadata });
+      manifest.instances.push({ key, ...(preview ? { previewKey: preview.key } : {}), metadata: parsed.metadata });
       if (manifest.instances.length % 20 === 0) await progress({ indexed: manifest.instances.length, skipped: manifest.skippedFiles });
     }
     await Promise.all(writes);

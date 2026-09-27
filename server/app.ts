@@ -142,7 +142,7 @@ export function createApp(deps: ApiDependencies) {
   app.get('/api/viewer/:id/manifest', viewer, async (_req, res) => {
     const session = res.locals.session as SessionRecord;
     const manifest = await deps.manifest(session.studyId);
-    res.json({ ...manifest, instances: manifest.instances.map(({ metadata }) => ({ metadata })) });
+    res.json({ ...manifest, instances: manifest.instances.map(({ metadata, previewKey }) => ({ metadata, ...(previewKey ? { preview: true } : {}) })) });
   });
   app.post('/api/viewer/:id/frames', viewer, async (req, res) => {
     const { instanceIds } = z.object({ instanceIds: z.array(z.string().max(128)).min(1).max(32) }).strict().parse(req.body);
@@ -154,7 +154,11 @@ export function createApp(deps: ApiDependencies) {
       if (!entry) throw new HttpError(404, 'Instance not in this session study');
       return entry;
     });
-    res.json({ expiresAt: Date.now() + 300000, frames: await Promise.all(selected.map(async entry => ({ id: entry.metadata.sopInstanceUID, url: await deps.sign(entry.key) }))) });
+    res.json({ expiresAt: Date.now() + 300000, frames: await Promise.all(selected.map(async entry => ({
+      id: entry.metadata.sopInstanceUID,
+      url: await deps.sign(entry.key),
+      ...(entry.previewKey ? { previewUrl: await deps.sign(entry.previewKey) } : {})
+    }))) });
   });
   app.post('/api/viewer/:id/status', viewer, async (req, res) => {
     const session = res.locals.session as SessionRecord;

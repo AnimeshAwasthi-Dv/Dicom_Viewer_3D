@@ -109,8 +109,16 @@ describe('viewer API', () => {
     expect((await request(`/api/viewer/${two.id}/manifest`, 'GET', undefined, one.token)).status).toBe(401);
     expect((await request(`/api/v1/sessions/${one.id}`, 'GET', undefined, one.token)).status).toBe(401);
     expect((await request(`/api/viewer/${one.id}/frames`, 'POST', { instanceIds: ['foreign-instance'] }, one.token)).status).toBe(404);
-    const frames = await request(`/api/viewer/${one.id}/frames`, 'POST', { instanceIds: ['1.2.3.4.1'] }, one.token);
+    const frames = await request(`/api/viewer/${one.id}/frames`, 'POST', { instanceIds: ['1.2.3.4.1', '1.2.3.4.2'] }, one.token);
     expect(frames.status).toBe(200);
+    // Only instances imported with a preview get a preview URL; the manifest says which have one, never the keys.
+    const signed = await frames.json() as { frames: Array<{ id: string; url: string; previewUrl?: string }> };
+    expect(signed.frames).toEqual([
+      { id: '1.2.3.4.1', url: 'https://s3.example.com/derived/1.dcm', previewUrl: 'https://s3.example.com/derived/1.bin' },
+      { id: '1.2.3.4.2', url: 'https://s3.example.com/derived/2.dcm' }
+    ]);
+    const publicManifest = await (await request(`/api/viewer/${one.id}/manifest`, 'GET', undefined, one.token)).json() as { instances: Array<Record<string, unknown>> };
+    expect(publicManifest.instances.map(instance => [instance.preview, 'key' in instance, 'previewKey' in instance])).toEqual([[true, false, false], [undefined, false, false]]);
   });
   it('validates slices, detects conflicting writes and restores latest state on reconnect', async () => {
     const { request, create } = await harness();

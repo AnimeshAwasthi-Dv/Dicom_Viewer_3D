@@ -66,7 +66,7 @@ export async function buildDicomVolume(
   let max = Number.NEGATIVE_INFINITY;
   // A pool of loaders, each taking the next slice as it finishes, keeps the download queue full: fixed batches wait
   // for their slowest slice. Slices are copied in as they arrive, so at most `parallel` decoded frames are held here.
-  const parallel = source.mode === 'remote' ? deviceProfile().remoteRequests.total : deviceProfile().decodeWorkers + 1;
+  const parallel = source.mode === 'remote' ? deviceProfile().remoteRequests.max : deviceProfile().decodeWorkers + 1;
   let next = 1;
   let loaded = 1;
   const place = (frame: DecodedFrame, index: number) => {

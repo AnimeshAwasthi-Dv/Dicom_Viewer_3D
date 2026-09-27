@@ -4,7 +4,7 @@ import type { StudyManifest } from '../../src/types/remote';
 export const studyId = '11111111-1111-4111-8111-111111111111';
 export const manifest: StudyManifest = {
   id: studyId, skippedFiles: 0,
-  instances: [1, 2].map(index => ({ key: `derived/${index}.dcm`, metadata: {
+  instances: [1, 2].map(index => ({ key: `derived/${index}.dcm`, ...(index === 1 ? { previewKey: 'derived/1.bin' } : {}), metadata: {
     fileName: `${index}.dcm`, studyInstanceUID: '1.2.3', seriesInstanceUID: '1.2.3.4', sopInstanceUID: `1.2.3.4.${index}`,
     rows: 2, columns: 2, bitsAllocated: 16, bitsStored: 16, pixelRepresentation: 0,
     photometricInterpretation: 'MONOCHROME2', samplesPerPixel: 1, rescaleSlope: 1, rescaleIntercept: 0,

@@ -99,16 +99,18 @@ export const ViewportCanvas = memo(function ViewportCanvas({ viewport, series }:
       if (index === viewport.instanceIndex) {
         setCurrentFrame(frame);
         setDisplayedIndex(index);
-        displayedRef.current = index;
-        markFirstImage();
         if (!viewport.windowInitialized) {
           const window = initialWindow(frame);
           setWindow(viewport.id, window.width, window.center);
         }
+        // A preview is on screen but the slice isn't loaded yet: cine and background work keep waiting for it.
+        if (frame.preview) return;
+        displayedRef.current = index;
+        markFirstImage();
       }
-    }, addError);
+    }, addError, cinePlaying);
     return () => scheduler.cancel();
-  }, [addError, currentSeries, imageSource, scheduler, setWindow, viewport.id, viewport.instanceIndex, viewport.windowInitialized]);
+  }, [addError, cinePlaying, currentSeries, imageSource, scheduler, setWindow, viewport.id, viewport.instanceIndex, viewport.windowInitialized]);
 
   useEffect(() => {
     if (!cinePlaying || !currentSeries) return;
@@ -254,6 +256,8 @@ export const ViewportCanvas = memo(function ViewportCanvas({ viewport, series }:
       const value = computeAngle(points[0], points[1], points[2]);
       return { ...base, value, unit: 'deg', label: `${formatNumber(value)} deg` };
     }
+    // Pixel values are saved with the measurement, and a preview's are interpolated: wait for the full slice.
+    if (currentFrame.preview && (type === 'rectangleRoi' || type === 'ellipseRoi' || type === 'probe')) return undefined;
     if ((type === 'rectangleRoi' || type === 'ellipseRoi') && points.length >= 2) {
       const stats = computeRoiStats(currentFrame, points[0], points[1], type === 'ellipseRoi');
       return { ...base, stats, label: `Mean ${formatNumber(stats.mean)} ${stats.unit}` };
@@ -371,7 +375,7 @@ export const ViewportCanvas = memo(function ViewportCanvas({ viewport, series }:
         onPointerCancel={onPointerUp}
       />
       <Overlay frame={currentFrame} viewport={viewport} series={currentSeries} measurements={allOverlayMeasurements} size={canvasSize} displayedIndex={displayedIndex} />
-      {currentFrame && displayedIndex !== viewport.instanceIndex && <div className="viewport-loading" role="status" aria-label="Loading slice" />}
+      {currentFrame && (displayedIndex !== viewport.instanceIndex || currentFrame.preview) && <div className="viewport-loading" role="status" aria-label={currentFrame.preview ? 'Showing a preview; loading full resolution' : 'Loading slice'} />}
       {pendingAnnotation && (
         <form
           className="annotation-editor"

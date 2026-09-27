@@ -66,4 +66,6 @@ export interface DecodedFrame {
   min: number;
   max: number;
   decodeTimeMs: number;
+  /** A low-resolution stand-in shown until the full slice arrives; never cached. */
+  preview?: boolean;
 }

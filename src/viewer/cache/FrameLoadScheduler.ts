@@ -6,37 +6,62 @@ import { isAbortError, RequestPriority } from './FrameRequestQueue';
 
 // Share of the frame cache a local series may fill, leaving room for thumbnails and the other viewports.
 const LOCAL_CACHE_SHARE = 0.75;
+// Slice changes closer together than this count as scrubbing.
+const SCRUB_MS = 150;
+// While scrubbing, only this many slices ahead are prefetched; the full window returns once scrolling pauses.
+const SCRUB_AHEAD = 3;
 
 export class FrameLoadScheduler {
   private controller?: AbortController;
   private lastSeries?: Series;
   private lastIndex = 0;
+  private lastChangeAt = 0;
   private direction = 0;
+  private settleTimer?: ReturnType<typeof setTimeout>;
 
   /**
    * Requests the slice on screen at interaction priority and a window of neighbours as prefetch, nearest first.
    * While the user scrolls, the window leans in the scroll direction, as Cornerstone's stack prefetch does.
    * The previous window is cancelled: slices it wanted that the new one doesn't are dropped from the download queue.
+   * While the user scrubs quickly, the window shrinks to a few slices ahead, so downloads for slices already passed
+   * are cancelled at once instead of finishing in the background; the full window is requested once scrolling pauses.
+   * `onFrame` may be called twice for the slice on screen: first with a low-resolution preview, then the full slice.
+   * `steady` is for cine, whose regular stepping is not scrubbing and needs the full window ahead.
    */
   loadPriority(
     source: ImageSource,
     series: Series,
     currentIndex: number,
     onFrame: (index: number, frame: DecodedFrame) => void,
-    onError: (message: string) => void
+    onError: (message: string) => void,
+    steady = false
   ): void {
     this.cancel();
     const controller = new AbortController();
     this.controller = controller;
+    const now = performance.now();
+    const moved = series === this.lastSeries && currentIndex !== this.lastIndex;
+    const scrubbing = moved && !steady && now - this.lastChangeAt < SCRUB_MS;
     if (series !== this.lastSeries) this.direction = 0;
-    else if (currentIndex !== this.lastIndex) this.direction = Math.sign(currentIndex - this.lastIndex);
+    else if (moved) this.direction = Math.sign(currentIndex - this.lastIndex);
+    if (moved || series !== this.lastSeries) this.lastChangeAt = now;
     this.lastSeries = series;
     this.lastIndex = currentIndex;
 
-    const order = windowOrder(series.instances.length, currentIndex, this.direction, this.span(source, series));
+    let span = this.span(source, series);
+    if (scrubbing) {
+      span = { radius: SCRUB_AHEAD, ahead: SCRUB_AHEAD, behind: 0 };
+      this.settleTimer = setTimeout(() => this.loadPriority(source, series, currentIndex, onFrame, onError, steady), SCRUB_MS);
+    }
+    const order = windowOrder(series.instances.length, currentIndex, this.direction, span);
     order.forEach((index, rank) => {
-      source.getFrame(series.instances[index].id, { priority: rank === 0 ? RequestPriority.Interaction : RequestPriority.Prefetch + rank, signal: controller.signal })
-        .then((frame) => { if (!controller.signal.aborted) onFrame(index, frame); })
+      const deliver = (frame: DecodedFrame) => { if (!controller.signal.aborted) onFrame(index, frame); };
+      source.getFrame(series.instances[index].id, {
+        priority: rank === 0 ? RequestPriority.Interaction : RequestPriority.Prefetch + rank,
+        signal: controller.signal,
+        onPreview: rank === 0 ? deliver : undefined
+      })
+        .then(deliver)
         .catch((error: unknown) => {
           // A neighbour that fails is reported if and when the user reaches it.
           if (rank === 0 && !controller.signal.aborted && !isAbortError(error)) onError(error instanceof Error ? error.message : 'Unable to decode frame.');
@@ -45,6 +70,8 @@ export class FrameLoadScheduler {
   }
 
   cancel(): void {
+    clearTimeout(this.settleTimer);
+    this.settleTimer = undefined;
     this.controller?.abort();
     this.controller = undefined;
   }

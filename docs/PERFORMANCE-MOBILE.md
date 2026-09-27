@@ -152,3 +152,24 @@ Checks: `tsc` (app and server), 46/46 tests, `npm run build` and lint pass. The 
 - Remote sessions start on the server's `activeTool` (`windowLevel`), so phones there need one tap on Scroll. Changing the server default would change behaviour for every portal.
 - MPR still builds its 3D texture on the main thread (about 270 ms long task on desktop). Moving it to a worker is item 1 above.
 - `test-data/mkct.cjs` (git-ignored) fails lint because it is a CommonJS script. Add `test-data` to the ESLint ignores or leave it.
+
+## Round 3 (2026-09-27): network-adaptive loading, scrubbing and previews
+
+An earlier test found render and decode times were low; the delay was frame transfer and prefetch. So this round changes how frames are downloaded, not how they are decoded. Decode workers stay at 4 on desktop and 2 on phones: more workers only help when decoding is saturated.
+
+### What changed
+
+| Area | Change | Files |
+|---|---|---|
+| Download concurrency | Concurrency now follows the measured network instead of a fixed 6 (desktop) or 4 (phone). Each download records time to first byte and bytes on the wire (`Content-Length`, so gzip counts at its compressed size). Throughput is measured across all downloads over busy time. The number of downloads in flight is `1 + latency / transfer time`, within 2 and the device maximum (6 desktop, 4 phone; S3 is HTTP/1.1 and browsers open at most 6 connections per host). On a slow link that means 2: the slice on screen plus one prefetch, instead of four transfers splitting the bandwidth. Until the first slices arrive, Chromium's `navigator.connection` estimate is used. Cancelled downloads don't count as slow. | `cache/NetworkEstimator.ts`, `RemoteImageSource.ts`, `core/DeviceProfile.ts` |
+| Cancellation while scrubbing | Slice changes less than 150 ms apart count as scrubbing. The window then shrinks to 3 slices ahead, so downloads for slices already passed are cancelled at once. The full window comes back 150 ms after scrolling stops. Cine keeps the full window. | `cache/FrameLoadScheduler.ts`, `ViewportCanvas.tsx` |
+| Priorities | Each caller's priority is tracked separately. A slice that was on screen, and is now only wanted as prefetch, drops back to prefetch instead of keeping an interaction slot. When the slice on screen is waiting and every slot is busy, the least urgent background download is stopped and requeued. | `cache/FrameRequestQueue.ts` |
+| Previews | At import, uncompressed greyscale slices of 384 px or more get a box-averaged preview (at most 256 px on a side; a quarter of the pixels for 512²), stored gzip-encoded next to the slice. The manifest marks which instances have one, and `/frames` signs a `previewUrl` for them. When the full slice is expected to take more than 250 ms (or, before anything is measured, in a series of 200+ slices), the viewer downloads the preview alongside it. It scales the preview up to full size in the decode worker (same geometry and rescale) and shows it until the full slice arrives. The spinner stays up while a preview is shown. ROI and probe can't be placed on a preview, because the values saved with them would be interpolated. Length, angle and annotation work, since the preview has the same geometry. Previews never enter the frame cache, MPR or cine. | `dicom/PreviewFormat.ts`, `server/importer.ts`, `server/app.ts`, `dicomWorker.ts`, `DecodePool.ts`, `RemoteImageSource.ts`, `ViewportCanvas.tsx` |
+
+Checks: `tsc` (app and server), 62/62 tests (new: `src/viewer/__tests__/adaptive.test.ts`, plus queue and `/frames` cases), and `vite build` pass. Lint shows only the two issues listed above.
+
+### Not done / still open
+- **Not measured yet.** None of this has been run through the Round 1–2 harness (phone at 5 Mbps / 70 ms, desktop at 50 Mbps / 40 ms). Run it before merging: first image, the slice on screen after a 40-tick fast scroll, and data used, with previews on and off.
+- **Existing imports have no previews.** `DERIVED_FRAME_FORMAT_VERSION` was not changed, so studies imported earlier keep working without previews. Changing it would re-import every study on next open. Do that only together with pre-import (Marengo now pre-imports new CT/MR/PT/NM studies in the background).
+- **Compressed sources (JPEG-LS, JPEG 2000) get no preview.** The import worker can't decode them in Node yet. They are already about a third the size of raw data.
+- **Preview size is fixed.** The preview is fixed at about a quarter of the pixels. A second, smaller tier for very slow links could be added if measurements call for it.

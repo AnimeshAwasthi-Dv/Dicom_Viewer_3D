@@ -50,7 +50,8 @@ export const remoteStateSchema = z.object({
 export type RemoteState = z.infer<typeof remoteStateSchema>;
 export interface StudyManifest {
   id: string;
-  instances: Array<{ key: string; metadata: DicomMetadata }>;
+  /** `previewKey`: a low-resolution preview of the slice, for large uncompressed slices imported since previews were added. */
+  instances: Array<{ key: string; previewKey?: string; metadata: DicomMetadata }>;
   skippedFiles: number;
 }
 export interface SessionSnapshot {
@@ -61,5 +62,5 @@ export interface SessionSnapshot {
   expiresAt: number;
 }
 export type PublicManifest = Omit<StudyManifest, 'instances'> & {
-  instances: Array<{ metadata: DicomMetadata }>;
+  instances: Array<{ metadata: DicomMetadata; preview?: boolean }>;
 };

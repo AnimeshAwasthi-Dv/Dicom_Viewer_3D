@@ -1,3 +1,5 @@
+import type { DecodedFrame } from '../../types/dicom';
+
 /** Lower runs first. The slice on screen is `Interaction`; prefetch adds its distance from the current slice. */
 export const RequestPriority = {
   Interaction: 0,
@@ -9,14 +11,21 @@ export interface FrameRequestOptions {
   priority?: number;
   /** Aborting tells the queue this caller no longer needs the frame; it is dropped once nobody does. */
   signal?: AbortSignal;
+  /** Remote sources may call this with a low-resolution stand-in before the frame itself resolves. */
+  onPreview?: (frame: DecodedFrame) => void;
 }
 
 interface Entry<T> {
   id: string;
+  /** The most urgent priority any caller still waiting has asked for. */
   priority: number;
-  /** Callers still waiting; unsignalled callers hold a permanent reference. */
-  refs: number;
+  /** Priority per caller still waiting; unsignalled callers hold a permanent reference. */
+  refs: Map<symbol, number>;
   running: boolean;
+  /** Whether the running load counts against the background limit (fixed when it starts or is re-prioritised). */
+  countedBackground: boolean;
+  /** Bumped when a running load is preempted, so the result of the abandoned attempt is ignored. */
+  attempt: number;
   controller: AbortController;
   promise: Promise<T>;
   resolve(value: T): void;
@@ -42,8 +51,15 @@ export class FrameRequestQueue<T> {
 
   constructor(
     private readonly load: (id: string, signal: AbortSignal) => Promise<T>,
-    private readonly limits: QueueLimits
+    private limits: QueueLimits
   ) {}
+
+  /** Change how many loads may run, e.g. as the network estimate changes. Running loads over a new limit finish. */
+  setLimits(limits: QueueLimits): void {
+    if (limits.total === this.limits.total && limits.background === this.limits.background) return;
+    this.limits = limits;
+    this.pump();
+  }
 
   request(id: string, { priority = RequestPriority.Interaction, signal }: FrameRequestOptions = {}): Promise<T> {
     if (signal?.aborted) return Promise.reject(abortError());
@@ -54,17 +70,15 @@ export class FrameRequestQueue<T> {
       const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
       // Callers that stop caring never observe the rejection; keep it from surfacing as unhandled.
       promise.catch(() => undefined);
-      entry = { id, priority, refs: 0, running: false, controller: new AbortController(), promise, resolve, reject };
+      entry = { id, priority, refs: new Map(), running: false, countedBackground: false, attempt: 0, controller: new AbortController(), promise, resolve, reject };
       this.entries.set(id, entry);
-    } else if (priority < entry.priority) {
-      // Requeue at the higher priority; a running background load now counts as interaction work.
-      if (entry.running && isBackground(entry.priority) && !isBackground(priority)) this.runningBackground--;
-      entry.priority = priority;
     }
-    entry.refs++;
+    const ref = Symbol(id);
+    entry.refs.set(ref, priority);
+    this.reprioritise(entry);
     if (signal) {
       const current = entry;
-      signal.addEventListener('abort', () => this.release(current), { once: true });
+      signal.addEventListener('abort', () => this.release(current, ref), { once: true });
     }
     this.pump();
     return entry.promise;
@@ -82,13 +96,15 @@ export class FrameRequestQueue<T> {
     return this.entries.size;
   }
 
-  private release(entry: Entry<T>): void {
-    entry.refs--;
-    if (entry.refs > 0) return;
+  private release(entry: Entry<T>, ref: symbol): void {
+    entry.refs.delete(ref);
+    // A slice that was on screen and is now only wanted as prefetch drops back to prefetch, so while the user
+    // scrubs, the slices they pass stop holding interaction slots.
+    if (entry.refs.size > 0) { this.reprioritise(entry); this.pump(); return; }
     // A new request for the same slice usually follows at once (the next scroll position overlaps the last one),
     // so wait a tick before cancelling a load someone may be about to ask for again.
     setTimeout(() => {
-      if (entry.refs > 0 || this.entries.get(entry.id) !== entry) return;
+      if (entry.refs.size > 0 || this.entries.get(entry.id) !== entry) return;
       this.entries.delete(entry.id);
       if (entry.running) {
         this.finish(entry);
@@ -99,12 +115,40 @@ export class FrameRequestQueue<T> {
     }, 0);
   }
 
+  private reprioritise(entry: Entry<T>): void {
+    entry.priority = Math.min(...entry.refs.values());
+    if (!entry.running || entry.countedBackground === isBackground(entry.priority)) return;
+    entry.countedBackground = isBackground(entry.priority);
+    this.runningBackground += entry.countedBackground ? 1 : -1;
+  }
+
   private pump(): void {
-    while (this.running < this.limits.total) {
+    for (;;) {
+      if (this.running >= this.limits.total && !this.preempt()) return;
       const next = this.pickNext();
       if (!next) return;
       this.start(next);
     }
+  }
+
+  /**
+   * When the slice on screen is waiting and every slot is busy, stop the least urgent background download and put it
+   * back in the queue. Fast scrubbing on a slow link otherwise leaves the new slice queued behind prefetch that
+   * started a moment earlier.
+   */
+  private preempt(): boolean {
+    let waiting = false;
+    let victim: Entry<T> | undefined;
+    for (const entry of this.entries.values()) {
+      if (!entry.running) { if (!isBackground(entry.priority)) waiting = true; }
+      else if (entry.countedBackground && (!victim || entry.priority > victim.priority)) victim = entry;
+    }
+    if (!waiting || !victim) return false;
+    this.finish(victim);
+    victim.attempt++;
+    victim.controller.abort();
+    victim.controller = new AbortController();
+    return true;
   }
 
   private pickNext(): Entry<T> | undefined {
@@ -123,17 +167,19 @@ export class FrameRequestQueue<T> {
 
   private start(entry: Entry<T>): void {
     entry.running = true;
+    entry.countedBackground = isBackground(entry.priority);
     this.running++;
-    if (isBackground(entry.priority)) this.runningBackground++;
+    if (entry.countedBackground) this.runningBackground++;
+    const attempt = entry.attempt;
     this.load(entry.id, entry.controller.signal).then(
-      value => { if (this.settle(entry)) entry.resolve(value); },
-      error => { if (this.settle(entry)) entry.reject(error); }
+      value => { if (this.settle(entry, attempt)) entry.resolve(value); },
+      error => { if (this.settle(entry, attempt)) entry.reject(error); }
     );
   }
 
-  /** Returns false when the entry was already cancelled or cleared. */
-  private settle(entry: Entry<T>): boolean {
-    if (this.entries.get(entry.id) !== entry) return false;
+  /** Returns false when the entry was already cancelled, cleared or preempted. */
+  private settle(entry: Entry<T>, attempt: number): boolean {
+    if (this.entries.get(entry.id) !== entry || entry.attempt !== attempt) return false;
     this.entries.delete(entry.id);
     this.finish(entry);
     this.pump();
@@ -144,7 +190,8 @@ export class FrameRequestQueue<T> {
     if (!entry.running) return;
     entry.running = false;
     this.running--;
-    if (isBackground(entry.priority)) this.runningBackground--;
+    if (entry.countedBackground) this.runningBackground--;
+    entry.countedBackground = false;
   }
 }
 

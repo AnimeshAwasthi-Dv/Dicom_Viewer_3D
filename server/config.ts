@@ -24,7 +24,12 @@ const schema = z.object({
   MAX_ZIP_BYTES: z.coerce.number().int().positive().default(8 * 1024 ** 3),
   MAX_ENTRY_BYTES: z.coerce.number().int().positive().default(128 * 1024 ** 2),
   MAX_EXPANDED_BYTES: z.coerce.number().int().positive().default(32 * 1024 ** 3),
-  MAX_ZIP_ENTRIES: z.coerce.number().int().positive().default(20000)
+  MAX_ZIP_ENTRIES: z.coerce.number().int().positive().default(20000),
+  // Origins allowed to embed the viewer in a frame, space-separated (for example the portal's origin). Unset keeps
+  // embedding unrestricted, as before this setting existed.
+  FRAME_ANCESTORS: z.string().transform(v => v.trim() || undefined)
+    .refine(v => !v || v.split(/\s+/).every(origin => origin === "'self'" || /^https?:\/\/[^/\s]+$/.test(origin)), 'Use origins (https://portal.example.com) or \'self\', separated by spaces')
+    .optional()
 });
 export type Config = z.infer<typeof schema>;
 export function readConfig(): Config {

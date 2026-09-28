@@ -5,7 +5,7 @@ import { gzip } from 'node:zlib';
 import unzipper from 'unzipper';
 import { DicomParser } from '../src/viewer/dicom/DicomParser';
 import { isUncompressedLittleEndian } from '../src/viewer/dicom/TransferSyntax';
-import { encodePreview } from '../src/viewer/dicom/PreviewFormat';
+import { canPreview, encodePreview } from '../src/viewer/dicom/PreviewFormat';
 import type { StudyManifest } from '../src/types/remote';
 
 export interface ImportLimits { maxEntries: number; maxEntryBytes: number; maxExpandedBytes: number }
@@ -66,9 +66,11 @@ export async function importZip(
       if (entry.type === 'Directory' || entry.path.startsWith('__MACOSX/') || size === 0) continue;
       const data = Buffer.concat(chunks);
       let parsed;
-      try { parsed = parser.parse(Uint8Array.from(data).buffer, entry.path.split(/[\\/]/).pop()); }
+      // Headers only: the viewer decodes the file itself (every transfer syntax Cornerstone supports, colour and
+      // multi-frame), so the importer needs pixel data only to build a preview of a large uncompressed slice.
+      try { parsed = parser.parse(Uint8Array.from(data).buffer, entry.path.split(/[\\/]/).pop(), { pixelData: false }); }
       catch { manifest.skippedFiles++; continue; }
-      if (!parsed.pixelData || parsed.error || parsed.metadata.rawTags?.some(tag => tag.tag === '(0028,0008)' && Number(tag.value) > 1)) {
+      if (parsed.error) {
         manifest.skippedFiles++;
         continue;
       }
@@ -78,7 +80,10 @@ export async function importZip(
       const name = createHash('sha256').update(sopId).digest('hex');
       const key = `${prefix}${id}/instances/${name}.dcm`;
       // Large uncompressed slices also get a small preview the viewer shows while the full slice downloads.
-      const previewBytes = encodePreview(parsed.metadata, parsed.pixelData);
+      const { pixelDataOffset, pixelDataLength } = parsed.metadata;
+      const previewBytes = canPreview(parsed.metadata) && pixelDataOffset !== undefined && pixelDataLength !== undefined
+        ? encodePreview(parsed.metadata, Uint8Array.from(data.subarray(pixelDataOffset, pixelDataOffset + pixelDataLength)).buffer)
+        : undefined;
       const preview = previewBytes ? { key: `${prefix}${id}/previews/${name}.bin`, bytes: previewBytes } : undefined;
       // Keys are generated from UIDs: archive paths never become filesystem/S3 paths.
       const pending = upload(key, data, parsed.metadata.transferSyntaxUID, preview).catch((error: unknown) => { writeError ??= error; });
@@ -93,7 +98,7 @@ export async function importZip(
     }
     await Promise.all(writes);
     if (writeError) throw writeError;
-    if (!manifest.instances.length) throw new Error('Archive contains no supported single-frame DICOM images');
+    if (!manifest.instances.length) throw new Error('Archive contains no supported DICOM images');
     await progress({ indexed: manifest.instances.length, skipped: manifest.skippedFiles });
     return manifest;
   } finally {

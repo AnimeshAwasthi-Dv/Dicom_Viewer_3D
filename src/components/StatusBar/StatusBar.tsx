@@ -1,25 +1,30 @@
 import { useEffect, useState } from 'react';
+import { cache } from '@cornerstonejs/core';
 import { useStudyStore } from '../../store/studyStore';
-import { useViewerStore } from '../../store/viewerStore';
+
+const MODE_LABEL = {
+  local: ['Local mode', 'Files remain on this device'],
+  remote: ['Connected study', 'Images loaded on demand'],
+  dicomweb: ['PACS study', 'Images streamed from the image server']
+} as const;
 
 export function StatusBar(): JSX.Element {
   const source = useStudyStore((state) => state.imageSource);
-  const renderTimeMs = useViewerStore((state) => state.renderTimeMs);
-  // Cache size is sampled twice a second instead of re-rendering on every decoded frame.
-  const [metrics, setMetrics] = useState(() => source?.metrics());
+  // Cache size is sampled twice a second instead of re-rendering on every decoded image.
+  const [cachedBytes, setCachedBytes] = useState(0);
   useEffect(() => {
-    setMetrics(source?.metrics());
-    const timer = window.setInterval(() => setMetrics(source?.metrics()), 500);
+    const sample = () => setCachedBytes(cache.getCacheSize());
+    sample();
+    const timer = window.setInterval(sample, 500);
     return () => window.clearInterval(timer);
   }, [source]);
-  const mb = metrics ? (metrics.memoryBytes / (1024 * 1024)).toFixed(1) : '0.0';
+  const [mode, detail] = MODE_LABEL[source?.mode ?? 'local'];
   return (
     <footer className="status-bar">
-      <span>{source?.mode === 'remote' ? 'Connected study' : 'Local mode'}</span>
-      <span>{source?.mode === 'remote' ? 'Images loaded on demand' : 'Files remain on this device'}</span>
-      <span className="status-optional">{metrics?.framesCached ?? 0} frames cached</span>
-      <span className="status-optional">{mb} MB estimated</span>
-      <span>Render {renderTimeMs.toFixed(1)} ms</span>
+      <span>{mode}</span>
+      <span>{detail}</span>
+      <span className="status-optional">{(cachedBytes / (1024 * 1024)).toFixed(1)} MB cached</span>
+      <span className="status-optional">GPU rendering · Cornerstone3D</span>
     </footer>
   );
 }

@@ -7,6 +7,9 @@ import { useViewerStore } from '../store/viewerStore';
 import { selectCurrentSeries, useStudyStore } from '../store/studyStore';
 import { useMeasurementStore } from '../store/measurementStore';
 import { RemoteSession } from '../components/RemoteSession/RemoteSession';
+import { DicomWebSession } from '../components/DicomWebSession/DicomWebSession';
+import { TextPromptDialog } from '../components/TextPromptDialog/TextPromptDialog';
+import { imageCount, seriesFrames } from '../viewer/study/StudyManager';
 
 export function App(): JSX.Element {
   const setActiveTool = useUiStore((state) => state.setActiveTool);
@@ -34,12 +37,12 @@ export function App(): JSX.Element {
       toggleShortcuts,
       toggleDicomTags,
       exportScreenshot: toggleExport,
-      clearOverlays: () => clearForInstance(seriesOf()?.instances[viewportOf().instanceIndex]?.metadata.sopInstanceUID),
+      clearOverlays: () => { const series = seriesOf(); clearForInstance(series ? seriesFrames(series)[viewportOf().instanceIndex]?.instance.metadata.sopInstanceUID : undefined); },
       cancelMeasurement: () => window.dispatchEvent(new CustomEvent('viewer:cancel-measurement')),
       previousSlice: () => { const viewport = viewportOf(); setInstanceIndex(viewport.id, Math.max(0, viewport.instanceIndex - 1)); },
-      nextSlice: () => { const viewport = viewportOf(); setInstanceIndex(viewport.id, Math.min((seriesOf()?.instances.length ?? 1) - 1, viewport.instanceIndex + 1)); },
+      nextSlice: () => { const viewport = viewportOf(); const series = seriesOf(); setInstanceIndex(viewport.id, Math.min(Math.max(0, (series ? imageCount(series) : 1) - 1), viewport.instanceIndex + 1)); },
       firstSlice: () => setInstanceIndex(viewportOf().id, 0),
-      lastSlice: () => setInstanceIndex(viewportOf().id, Math.max(0, (seriesOf()?.instances.length ?? 1) - 1))
+      lastSlice: () => { const series = seriesOf(); setInstanceIndex(viewportOf().id, Math.max(0, (series ? imageCount(series) : 1) - 1)); }
     });
     keyboard.attach();
     return () => keyboard.dispose();
@@ -48,7 +51,9 @@ export function App(): JSX.Element {
   return (
     <ErrorBoundary>
       <RemoteSession />
+      <DicomWebSession />
       <ViewerShell />
+      <TextPromptDialog />
     </ErrorBoundary>
   );
 }

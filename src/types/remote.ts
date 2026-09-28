@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { DicomMetadata } from './dicom';
+import { MEASUREMENT_TOOL_IDS, TOOL_IDS } from '../viewer/tools/toolIds';
 
 const finite = z.number().finite();
 const uid = z.string().min(1).max(128);
@@ -11,11 +12,13 @@ export const cameraSchema = z.object({
 }).strict();
 export const measurementSchema = z.object({
   id: uid,
-  type: z.enum(['length', 'angle', 'rectangleRoi', 'ellipseRoi', 'probe', 'annotation']),
+  type: z.enum(MEASUREMENT_TOOL_IDS),
   studyInstanceUID: uid, seriesInstanceUID: uid, sopInstanceUID: uid,
+  frameNumber: z.number().int().min(1).optional(),
   frameOfReferenceUID: uid.optional(),
-  points: z.array(z.object({ x: finite, y: finite, z: finite.optional() })).min(1).max(3),
-  value: finite.optional(), unit: z.string().max(40).optional(),
+  // Outline tools (freehand, spline, livewire) carry their contour.
+  points: z.array(z.object({ x: finite, y: finite, z: finite.optional() })).min(1).max(1024),
+  value: finite.optional(), unit: z.string().max(40).optional(), secondaryValue: finite.optional(),
   label: z.string().max(1000).optional(), createdAt: z.string().max(40),
   stats: z.object({ area: finite, mean: finite, min: finite, max: finite, stdDev: finite, unit: z.string().max(40) }).optional()
 }).strict();
@@ -39,7 +42,7 @@ export const remoteStateSchema = z.object({
     windowWidth: finite.positive().optional(), windowCenter: finite.optional(),
     camera: cameraSchema.optional()
   }).strict().refine(v => (v.windowWidth === undefined) === (v.windowCenter === undefined), 'Supply both windowWidth and windowCenter')).min(1).max(4),
-  activeTool: z.enum(['scroll', 'windowLevel', 'pan', 'zoom', 'length', 'angle', 'rectangleRoi', 'ellipseRoi', 'probe', 'annotation']).default('windowLevel'),
+  activeTool: z.enum(TOOL_IDS).default('windowLevel'),
   cinePlaying: z.boolean().default(false), cineFps: finite.min(1).max(60).default(10),
   mprOpen: z.boolean().default(false),
   mpr: mprSettingsSchema.optional(),

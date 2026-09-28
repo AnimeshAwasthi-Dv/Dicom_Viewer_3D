@@ -36,6 +36,10 @@ export interface DicomMetadata {
   frameOfReferenceUID?: string;
   windowCenter?: number;
   windowWidth?: number;
+  /** Every VOI window stored in the file (Window Center/Width can be multi-valued), with its explanation when given. */
+  voiPresets?: Array<{ center: number; width: number; explanation?: string }>;
+  /** Frames in a multi-frame instance (cine ultrasound, XA, enhanced CT/MR, tomosynthesis). Absent means one. */
+  numberOfFrames?: number;
   rescaleSlope: number;
   rescaleIntercept: number;
   transferSyntaxUID: TransferSyntaxUID;
@@ -56,16 +60,4 @@ export interface ParsedDicomFile {
   metadata: DicomMetadata;
   pixelData?: ArrayBuffer;
   error?: string;
-}
-
-export interface DecodedFrame {
-  metadata: DicomMetadata;
-  // Decoders fill this, but frames decoded in the worker pool drop it: nothing reads it and it would double the cache size.
-  storedPixels?: Int16Array | Uint16Array | Uint8Array | Int8Array;
-  modalityPixels: Float32Array;
-  min: number;
-  max: number;
-  decodeTimeMs: number;
-  /** A low-resolution stand-in shown until the full slice arrives; never cached. */
-  preview?: boolean;
 }

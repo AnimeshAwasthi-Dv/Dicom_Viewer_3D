@@ -20,6 +20,7 @@ type Stored = Int16Array | Uint16Array | Uint8Array | Int8Array;
 
 export function canPreview(metadata: DicomMetadata): boolean {
   return isUncompressedLittleEndian(metadata.transferSyntaxUID)
+    && (metadata.numberOfFrames ?? 1) === 1
     && metadata.samplesPerPixel === 1
     && (metadata.bitsAllocated === 8 || metadata.bitsAllocated === 16)
     && Math.max(metadata.rows, metadata.columns) >= PREVIEW_MIN_SIZE

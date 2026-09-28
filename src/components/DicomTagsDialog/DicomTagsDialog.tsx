@@ -3,7 +3,7 @@ import { Search, X } from 'lucide-react';
 import { useUiStore } from '../../store/uiStore';
 import { selectCurrentSeries, useStudyStore } from '../../store/studyStore';
 import { useViewerStore } from '../../store/viewerStore';
-import type { DicomMetadata } from '../../types/dicom';
+import type { DicomTag } from '../../types/dicom';
 
 export function DicomTagsDialog(): JSX.Element | null {
   const [query, setQuery] = useState('');
@@ -12,20 +12,19 @@ export function DicomTagsDialog(): JSX.Element | null {
   const studies = useStudyStore((state) => state.studies);
   const selectedSeriesId = useStudyStore((state) => state.selectedSeriesId);
   const imageSource = useStudyStore((state) => state.imageSource);
-  const [loadedMetadata, setLoadedMetadata] = useState<DicomMetadata>();
   const viewport = useViewerStore((state) => state.viewports[0]);
-  const series = selectCurrentSeries(studies, selectedSeriesId);
-  const indexedMetadata = series?.instances[viewport.instanceIndex]?.metadata;
-  const metadata = loadedMetadata?.sopInstanceUID === indexedMetadata?.sopInstanceUID ? loadedMetadata : indexedMetadata;
+  const series = selectCurrentSeries(studies, viewport.seriesId ?? selectedSeriesId);
+  const imageId = series && imageSource ? imageSource.imageIds(series)[viewport.instanceIndex] : undefined;
+  const [loaded, setLoaded] = useState<{ imageId: string; tags: DicomTag[] }>();
   useEffect(() => {
-    if (!open || !imageSource || !indexedMetadata || indexedMetadata.rawTags) return;
+    if (!open || !imageSource || !imageId) return;
     let cancelled = false;
-    imageSource.getFrame(indexedMetadata.sopInstanceUID).then(frame => {
-      if (!cancelled) setLoadedMetadata(frame.metadata);
-    }).catch(() => undefined);
+    // Read from the file (or DICOMweb metadata) of the image on screen.
+    imageSource.tags(imageId).then((tags) => { if (!cancelled) setLoaded({ imageId, tags }); }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [open, imageSource, indexedMetadata]);
-  const tags = useMemo(() => metadata?.rawTags ?? [], [metadata?.rawTags]);
+  }, [open, imageSource, imageId]);
+  const metadata = imageId ? imageSource?.locate(imageId)?.instance.metadata : undefined;
+  const tags = useMemo(() => (loaded?.imageId === imageId ? loaded?.tags : undefined) ?? [], [imageId, loaded]);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredTags = useMemo(() => {
     if (!normalizedQuery) return tags;

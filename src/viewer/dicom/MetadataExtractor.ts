@@ -11,6 +11,7 @@ const getString = (map: DicomElementMap, tag: string): string | undefined => {
 const getNumber = (map: DicomElementMap, tag: string): number | undefined => {
   const value = map.get(tag);
   if (typeof value === 'number') return value;
+  if (Array.isArray(value)) return Number.isFinite(value[0]) ? value[0] : undefined;
   if (typeof value === 'string') {
     const parsed = Number(value.split('\\')[0]);
     return Number.isFinite(parsed) ? parsed : undefined;
@@ -28,6 +29,24 @@ const getNumbers = <T extends number>(map: DicomElementMap, tag: string, length:
   if (!values || values.length < length || values.some((item) => !Number.isFinite(item))) return undefined;
   return values.slice(0, length);
 };
+
+const getAllNumbers = (map: DicomElementMap, tag: string): number[] => {
+  const value = map.get(tag);
+  const values = Array.isArray(value) ? value : typeof value === 'number' ? [value] : typeof value === 'string' ? value.split('\\').map(Number) : [];
+  return values.filter((item) => Number.isFinite(item));
+};
+
+/** Pairs the multi-valued Window Center / Window Width / Window Center & Width Explanation into presets. */
+function voiPresets(map: DicomElementMap): DicomMetadata['voiPresets'] {
+  const centers = getAllNumbers(map, '00281050');
+  const widths = getAllNumbers(map, '00281051');
+  const explanations = String(map.get('00281055') ?? '').split('\\').map((item) => item.trim());
+  const presets = centers.flatMap((center, index) => {
+    const width = widths[index];
+    return width !== undefined && width >= 1 ? [{ center, width, ...(explanations[index] ? { explanation: explanations[index] } : {}) }] : [];
+  });
+  return presets.length ? presets : undefined;
+}
 
 export interface PixelDataLocation {
   offset: number;
@@ -48,6 +67,7 @@ export function extractMetadata(
   const spacing = getNumbers(elements, '00280030', 2);
   const ipp = getNumbers(elements, '00200032', 3);
   const iop = getNumbers(elements, '00200037', 6);
+  const frames = Math.floor(getNumber(elements, '00280008') ?? 1);
 
   return {
     fileName,
@@ -82,6 +102,8 @@ export function extractMetadata(
     frameOfReferenceUID: getString(elements, '00200052'),
     windowCenter: getNumber(elements, '00281050'),
     windowWidth: getNumber(elements, '00281051'),
+    voiPresets: voiPresets(elements),
+    ...(frames > 1 ? { numberOfFrames: frames } : {}),
     rescaleSlope: getNumber(elements, '00281053') ?? 1,
     rescaleIntercept: getNumber(elements, '00281052') ?? 0,
     transferSyntaxUID,

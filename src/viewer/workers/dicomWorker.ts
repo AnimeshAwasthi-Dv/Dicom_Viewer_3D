@@ -1,53 +1,25 @@
 import { DicomParser } from '../dicom/DicomParser';
-import { CodecManager } from '../codecs/CodecManager';
-import { expandPreview } from '../dicom/PreviewFormat';
-import type { DicomMetadata } from '../../types/dicom';
+import type { ParsedDicomFile } from '../../types/dicom';
 
 export interface DicomWorkerFile {
   name: string;
   buffer: ArrayBuffer;
 }
 
-/** Parse a batch of files (local loading). */
+/** Read the headers of a batch of local files. Pixel data is decoded later, by Cornerstone, from the file itself. */
 export interface DicomWorkerRequest {
   id: string;
   files: DicomWorkerFile[];
 }
 
-/** Decode one image off the main thread: either a whole DICOM file or already-extracted pixel data. */
-export interface DicomDecodeRequest {
-  id: string;
-  kind: 'decode';
-  buffer?: ArrayBuffer;
-  metadata?: DicomMetadata;
-  pixelData?: ArrayBuffer;
-  expectedSopInstanceUID?: string;
-  /** `buffer` is a low-resolution preview of the slice this metadata describes (see PreviewFormat). */
-  previewOf?: DicomMetadata;
-}
-
-/** Load codecs ahead of the first decode. */
-export interface DicomWarmRequest {
-  id: string;
-  kind: 'warm';
-  transferSyntaxes: string[];
-}
-
 export interface DicomWorkerResponse {
   id: string;
-  parsed: ReturnType<DicomParser['parse']>[];
-}
-
-export interface DicomDecodeResponse {
-  id: string;
-  frame?: { metadata: DicomMetadata; modalityPixels: Float32Array; min: number; max: number; decodeTimeMs: number };
-  error?: string;
+  parsed: ParsedDicomFile[];
 }
 
 const parser = new DicomParser();
-const codecs = new CodecManager();
 
-function failedParse(name: string, error: unknown) {
+function failedParse(name: string, error: unknown): ParsedDicomFile {
   return {
     metadata: {
       fileName: name,
@@ -58,7 +30,7 @@ function failedParse(name: string, error: unknown) {
       columns: 0,
       bitsAllocated: 16,
       bitsStored: 16,
-      pixelRepresentation: 0 as const,
+      pixelRepresentation: 0,
       photometricInterpretation: 'MONOCHROME2',
       samplesPerPixel: 1,
       rescaleSlope: 1,
@@ -69,48 +41,17 @@ function failedParse(name: string, error: unknown) {
   };
 }
 
-async function decode(request: DicomDecodeRequest): Promise<DicomDecodeResponse> {
-  try {
-    let metadata = request.metadata;
-    let pixelData = request.pixelData;
-    if (request.buffer && request.previewOf) {
-      ({ metadata, pixelData } = expandPreview(request.buffer, request.previewOf));
-    } else if (request.buffer) {
-      const file = parser.parse(request.buffer, 'remote.dcm');
-      if (!file.pixelData || file.error) throw new Error(file.error ?? 'No pixel data returned.');
-      metadata = file.metadata;
-      pixelData = file.pixelData;
-    }
-    if (!metadata || !pixelData) throw new Error('No image returned by parser.');
-    if (request.expectedSopInstanceUID && metadata.sopInstanceUID !== request.expectedSopInstanceUID) throw new Error('Image identity does not match the requested instance.');
-    const frame = await codecs.decodeAsync(metadata, pixelData);
-    // The preview decodes as uncompressed; report the slice's own metadata, not the stand-in transfer syntax.
-    return { id: request.id, frame: { metadata: request.previewOf ?? frame.metadata, modalityPixels: frame.modalityPixels, min: frame.min, max: frame.max, decodeTimeMs: frame.decodeTimeMs } };
-  } catch (error) {
-    return { id: request.id, error: error instanceof Error ? error.message : 'Unable to decode image.' };
-  }
-}
-
-self.onmessage = async (event: MessageEvent<DicomWorkerRequest | DicomDecodeRequest | DicomWarmRequest>) => {
-  const data = event.data;
-  if ('kind' in data && data.kind === 'warm') {
-    await codecs.preload(data.transferSyntaxes).catch(() => undefined);
-    return;
-  }
-  if ('kind' in data && data.kind === 'decode') {
-    const response = await decode(data);
-    self.postMessage(response, response.frame ? { transfer: [response.frame.modalityPixels.buffer] } : undefined);
-    return;
-  }
-  const { id, files } = data as DicomWorkerRequest;
+self.onmessage = (event: MessageEvent<DicomWorkerRequest>) => {
+  const { id, files } = event.data;
   const parsed = files.map((file) => {
     try {
-      return parser.parse(file.buffer, file.name);
+      const result = parser.parse(file.buffer, file.name, { pixelData: false });
+      // Detailed tags are read from the file when the tags dialog opens; the study index only needs the summary.
+      delete result.metadata.rawTags;
+      return result;
     } catch (error) {
       return failedParse(file.name, error);
     }
   });
-  // Transfer the pixel buffers: copying a batch's pixels back (about 24 MB for 48 CT slices) stalls the main thread.
-  const transfer = new Set(parsed.flatMap((file) => ('pixelData' in file && file.pixelData ? [file.pixelData] : [])));
-  self.postMessage({ id, parsed }, { transfer: [...transfer] });
+  self.postMessage({ id, parsed } satisfies DicomWorkerResponse);
 };

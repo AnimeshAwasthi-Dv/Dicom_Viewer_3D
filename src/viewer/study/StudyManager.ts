@@ -77,7 +77,6 @@ export function buildStudies(parsed: ParsedDicomFile[], metadataOnly = false): S
       id: metadata.sopInstanceUID,
       fileName: metadata.fileName,
       metadata,
-      pixelData: file.pixelData,
       sortPosition: 0,
       errors: file.error ? [file.error] : []
     };
@@ -98,12 +97,31 @@ export function buildStudies(parsed: ParsedDicomFile[], metadataOnly = false): S
   return Array.from(studyMap.values());
 }
 
+export interface SeriesFrame {
+  instance: Instance;
+  /** 1-based frame of a multi-frame instance; absent for single-frame instances. */
+  frameNumber?: number;
+}
+
+/** The series' images in display order: one per single-frame instance, one per frame of a multi-frame instance. */
+export function seriesFrames(series: Series): SeriesFrame[] {
+  return series.instances.flatMap((instance) => {
+    const frames = instance.metadata.numberOfFrames ?? 1;
+    return frames > 1 ? Array.from({ length: frames }, (_, index) => ({ instance, frameNumber: index + 1 })) : [{ instance }];
+  });
+}
+
+/** Images in the series (frames, for multi-frame instances), or the reported count while it is still loading. */
+export function imageCount(series: Series): number {
+  return series.instances.length ? series.instances.reduce((count, instance) => count + (instance.metadata.numberOfFrames ?? 1), 0) : series.expectedImageCount ?? 0;
+}
+
 export function choosePrimarySeries(studies: Study[]): Series | undefined {
   return studies
     .flatMap((study) => study.series)
-    .filter((series) => series.instances.length > 0)
+    .filter((series) => imageCount(series) > 0)
     .sort((a, b) => {
       const modalityScore = (series: Series) => (series.modality === 'CT' || series.modality === 'MR' ? 0 : 1);
-      return modalityScore(a) - modalityScore(b) || b.instances.length - a.instances.length;
+      return modalityScore(a) - modalityScore(b) || imageCount(b) - imageCount(a);
     })[0];
 }

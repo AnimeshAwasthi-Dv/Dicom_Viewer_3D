@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
-import { createApp, studyIdFor } from '../app';
+import { contentSecurityPolicy, createApp, studyIdFor } from '../app';
 import type { Sessions, SessionRecord } from '../sessions';
 import { digest } from '../sessions';
 import { config, manifest, studyId } from './fixtures';
@@ -154,6 +154,17 @@ describe('viewer API', () => {
     expect((await request(`/api/viewer/${session.id}/manifest`, 'GET', undefined, session.token)).status).toBe(401);
   });
 });
+describe('security headers', () => {
+  it('limits scripts to the viewer and, when configured, which sites may frame it', async () => {
+    const { request } = await harness();
+    const policy = (await request('/healthz')).headers.get('content-security-policy')!;
+    expect(policy).toContain("script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'");
+    expect(policy).not.toContain("'unsafe-inline' 'unsafe-eval'");
+    expect(policy).not.toContain('frame-ancestors');
+    expect(contentSecurityPolicy('https://portal.example.com')).toContain('frame-ancestors https://portal.example.com');
+  });
+});
+
 describe('control validation', () => {
   it('rejects mismatched layouts, nonfinite camera values and foreign measurements', () => {
     const state = initialState(manifest);

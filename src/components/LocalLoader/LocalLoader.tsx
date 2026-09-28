@@ -19,8 +19,8 @@ export function LocalLoader(): JSX.Element {
     const files = Array.from(fileList).filter((file) => file.size > 0);
     if (files.length === 0) return;
     try {
-      const parsed = await new DicomLoader().loadFiles(files, setLoading);
-      const source = new LocalFileImageSource(parsed);
+      const loaded = await new DicomLoader().loadFiles(files, setLoading);
+      const source = new LocalFileImageSource(loaded);
       const studies = await source.getStudyMetadata();
       setSource(source, studies);
       const primary = choosePrimarySeries(studies);
@@ -56,7 +56,7 @@ export function LocalLoader(): JSX.Element {
         <button onClick={() => inputRef.current?.click()}><Upload size={16} /> Open DICOM / ZIP</button>
         <button className="secondary" onClick={() => folderRef.current?.click()}>Open Folder</button>
       </div>
-      <span className="support">Supports CT · MR · CR · DX</span>
+      <span className="support">CT · MR · CR · DX · MG · US · XA · colour and multi-frame · compressed DICOM</span>
       <input ref={inputRef} hidden type="file" multiple accept=".dcm,.dicom,.zip,application/dicom,application/zip" onChange={(event) => event.target.files && void load(event.target.files)} />
       <input ref={folderRef} hidden type="file" multiple webkitdirectory="" onChange={(event) => event.target.files && void load(event.target.files)} />
     </div>

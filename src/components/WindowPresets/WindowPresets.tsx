@@ -40,16 +40,26 @@ function presetsFor(modality?: string): Array<{ name: string; ww: number; wl: nu
   return presetsByModality.DEFAULT;
 }
 
-export function WindowPresets({ viewportId, modality }: { viewportId: string; modality?: string }): JSX.Element {
+type Preset = { name: string; ww: number; wl: number };
+
+/** The file's own VOI windows first (with their explanations), then the modality's standard presets. */
+export function WindowPresets({ viewportId, modality, voiPresets }: { viewportId: string; modality?: string; voiPresets?: Array<{ center: number; width: number; explanation?: string }> }): JSX.Element {
   const setWindow = useViewerStore((state) => state.setWindow);
-  const presets = presetsFor(modality);
+  const fromFile: Preset[] = (voiPresets ?? []).map((preset, index) => ({
+    name: `${preset.explanation || `DICOM ${index + 1}`} · C${Math.round(preset.center)}/W${Math.round(preset.width)}`,
+    ww: preset.width,
+    wl: preset.center
+  }));
+  const presets = [...fromFile, ...presetsFor(modality)];
   return (
-    <select className="preset-select" defaultValue="" onChange={(event) => {
+    // Resets to "Preset" after each choice, so choosing the same preset again re-applies it.
+    <select className="preset-select" aria-label="Window preset" value="" onChange={(event) => {
       const preset = presets.find((item) => item.name === event.target.value);
       if (preset) setWindow(viewportId, preset.ww, preset.wl);
     }}>
       <option value="">Preset</option>
-      {presets.map((preset) => <option key={preset.name} value={preset.name}>{preset.name}</option>)}
+      {fromFile.length > 0 && <optgroup label="From image">{fromFile.map((preset) => <option key={preset.name} value={preset.name}>{preset.name}</option>)}</optgroup>}
+      <optgroup label={modality?.toUpperCase() ?? 'Standard'}>{presetsFor(modality).map((preset) => <option key={preset.name} value={preset.name}>{preset.name}</option>)}</optgroup>
     </select>
   );
 }

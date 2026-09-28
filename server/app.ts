@@ -32,7 +32,9 @@ const bearer = (header?: string) => header?.startsWith('Bearer ') ? header.slice
 // Change this only when the representation of derived frames changes. It makes
 // existing source archives import into a new, isolated derived prefix instead
 // of reusing an incompatible (or less efficient) prior representation.
-const DERIVED_FRAME_FORMAT_VERSION = 'gzip-v1';
+// cs3d-v1: imports keep compressed (JPEG, JPEG Lossless, RLE, HTJ2K…), colour and multi-frame images, which
+// earlier imports skipped because the viewer could not decode them.
+const DERIVED_FRAME_FORMAT_VERSION = 'cs3d-v1';
 
 /**
  * The import ID for one version of one source ZIP. Asking to import the same archive again returns the study already
@@ -45,6 +47,27 @@ export function studyIdFor(bucket: string, key: string, version: string): string
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/**
+ * Scripts only from this origin, never inline. 'unsafe-eval' is required by the image decoders: Cornerstone's
+ * Emscripten codec builds (JPEG-LS among them) generate their bindings with `new Function`, and fail without it (the
+ * RadAgent imaging gateway allows it for the same reason). Images come from S3 through signed HTTPS URLs.
+ * `frameAncestors` limits which sites may embed the viewer, against clickjacking.
+ */
+export function contentSecurityPolicy(frameAncestors?: string): string {
+  return [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'",
+    "worker-src 'self' blob:",
+    "connect-src 'self' https:",
+    "img-src 'self' data: blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    ...(frameAncestors ? [`frame-ancestors ${frameAncestors}`] : [])
+  ].join('; ');
+}
+
 export function createApp(deps: ApiDependencies) {
   const { config, sessions } = deps;
   const app = express();
@@ -53,6 +76,7 @@ export function createApp(deps: ApiDependencies) {
   app.use((_req, res, next) => {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', contentSecurityPolicy(config.FRAME_ANCESTORS));
     next();
   });
   app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });

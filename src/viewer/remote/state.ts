@@ -20,7 +20,7 @@ export function applyRemoteState(state: RemoteState): void {
         camera: desired.camera ?? { ...defaultCamera, pan: { ...defaultCamera.pan } }
       };
     }),
-    frames: {}, cinePlaying: state.cinePlaying, cineFps: state.cineFps
+    cinePlaying: state.cinePlaying, cineFps: state.cineFps
   });
   useStudyStore.getState().selectSeries(state.viewports[0].seriesId);
   useUiStore.setState({ activeTool: state.activeTool, mprOpen: state.mprOpen, ...state.dialogs });

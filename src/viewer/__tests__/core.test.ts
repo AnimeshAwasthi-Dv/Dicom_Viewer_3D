@@ -1,13 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { DecodedFrame, DicomMetadata, ParsedDicomFile } from '../../types/dicom';
-import { LRUCache } from '../cache/LRUCache';
-import { OpenJpegDecoder } from '../codecs/OpenJpegDecoder';
-import { applyRescale, RawDecoder } from '../codecs/RawDecoder';
+import type { DicomMetadata, ParsedDicomFile } from '../../types/dicom';
 import { isSupportedTransferSyntax, TRANSFER_SYNTAX } from '../dicom/TransferSyntax';
 import { extractMetadata } from '../dicom/MetadataExtractor';
-import { pixelDistanceMm } from '../measurements/CoordinateTransforms';
-import { computeRoiStats } from '../measurements/MeasurementManager';
-import { buildStudies, sortSeriesInstances } from '../study/StudyManager';
+import { buildStudies, choosePrimarySeries, imageCount, seriesFrames, sortSeriesInstances } from '../study/StudyManager';
 
 function metadata(partial: Partial<DicomMetadata> = {}): DicomMetadata {
   return {
@@ -54,72 +49,10 @@ describe('viewer core', () => {
         imagePositionPatient: [0, 0, 30 - index * 10],
         instanceNumber
       }),
-      pixelData: new ArrayBuffer(8),
       sortPosition: 30 - index * 10,
       errors: []
     }));
     expect(sortSeriesInstances(instances).map((instance) => instance.id)).toEqual(['sop-1', 'sop-2', 'sop-3']);
-  });
-
-  it('applies rescale slope and intercept', () => {
-    expect(applyRescale(100, 2, -1024)).toBe(-824);
-  });
-
-  it('converts RGB samples into one display plane', () => {
-    const pixels = new Uint8Array([
-      255, 0, 0,
-      0, 255, 0,
-      0, 0, 255,
-      255, 255, 255
-    ]);
-    const frame = new RawDecoder().decode(metadata({
-      bitsAllocated: 8,
-      bitsStored: 8,
-      pixelRepresentation: 0,
-      photometricInterpretation: 'RGB',
-      samplesPerPixel: 3
-    }), pixels.buffer);
-    expect(frame.modalityPixels).toHaveLength(4);
-    expect(Array.from(frame.modalityPixels)).toEqual([
-      expect.closeTo(76.245, 3),
-      expect.closeTo(149.685, 3),
-      expect.closeTo(29.07, 3),
-      255
-    ]);
-  });
-
-  it('computes pixel distance in millimeters when spacing exists', () => {
-    expect(pixelDistanceMm({ x: 0, y: 0 }, { x: 3, y: 4 }, [2, 1]).value).toBeCloseTo(Math.hypot(3, 8));
-  });
-
-  it('falls back to pixels when spacing is unavailable', () => {
-    expect(pixelDistanceMm({ x: 0, y: 0 }, { x: 3, y: 4 }).unit).toBe('px');
-  });
-
-  it('computes ROI statistics over modality pixels', () => {
-    const frame: DecodedFrame = {
-      metadata: metadata({ modality: 'CT' }),
-      storedPixels: new Int16Array([1, 2, 3, 4]),
-      modalityPixels: new Float32Array([1, 2, 3, 4]),
-      min: 1,
-      max: 4,
-      decodeTimeMs: 0
-    };
-    const stats = computeRoiStats(frame, { x: 0, y: 0 }, { x: 1, y: 1 });
-    expect(stats.mean).toBe(2.5);
-    expect(stats.min).toBe(1);
-    expect(stats.max).toBe(4);
-    expect(stats.unit).toBe('HU');
-  });
-
-  it('evicts least recently used cache entries by size', () => {
-    const cache = new LRUCache<string, number>(3);
-    cache.set('a', 1, 1);
-    cache.set('b', 2, 1);
-    cache.get('a');
-    cache.set('c', 3, 2);
-    expect(cache.get('b')).toBeUndefined();
-    expect(cache.get('a')).toBe(1);
   });
 
   it('extracts required metadata with defaults', () => {
@@ -136,26 +69,51 @@ describe('viewer core', () => {
     expect(meta.pixelSpacing).toEqual([0.7, 0.8]);
   });
 
-  it('detects unsupported transfer syntax', () => {
-    expect(isSupportedTransferSyntax('1.2.840.10008.1.2.4.50')).toBe(false);
+  it('reads every VOI window a file stores, with its explanation', () => {
+    const elements = new Map<string, string | number | number[]>([
+      ['00281050', [40, -600]],
+      ['00281051', [400, 1500]],
+      ['00281055', 'SOFT\\LUNG']
+    ]);
+    const meta = extractMetadata(elements, 'test.dcm', TRANSFER_SYNTAX.explicitLittleEndian);
+    expect(meta.windowCenter).toBe(40);
+    expect(meta.windowWidth).toBe(400);
+    expect(meta.voiPresets).toEqual([{ center: 40, width: 400, explanation: 'SOFT' }, { center: -600, width: 1500, explanation: 'LUNG' }]);
   });
 
-  it('enables JPEG-LS lossless transfer syntax', () => {
-    expect(isSupportedTransferSyntax('1.2.840.10008.1.2.4.80')).toBe(true);
+  it('reads the frame count of multi-frame images', () => {
+    const multi = extractMetadata(new Map([['00280008', 30]]), 'cine.dcm', TRANSFER_SYNTAX.jpegBaseline);
+    expect(multi.numberOfFrames).toBe(30);
+    expect(extractMetadata(new Map([['00280008', 1]]), 'single.dcm', TRANSFER_SYNTAX.jpegBaseline).numberOfFrames).toBeUndefined();
   });
 
-  it('enables JPEG 2000 transfer syntaxes', () => {
-    expect(isSupportedTransferSyntax(TRANSFER_SYNTAX.jpeg2000Lossless)).toBe(true);
-    expect(isSupportedTransferSyntax(TRANSFER_SYNTAX.jpeg2000)).toBe(true);
+  it('accepts every transfer syntax Cornerstone decodes, and nothing else', () => {
+    for (const uid of Object.values(TRANSFER_SYNTAX)) expect(isSupportedTransferSyntax(uid)).toBe(true);
+    expect(isSupportedTransferSyntax('1.2.840.10008.1.2.4.100')).toBe(false);
+    expect(isSupportedTransferSyntax('unknown')).toBe(false);
   });
 
-  it('does not route JPEG-LS through the raw decoder', () => {
-    expect(new RawDecoder().canDecode('1.2.840.10008.1.2.4.80')).toBe(false);
+  it('expands multi-frame instances into one image per frame', () => {
+    const studies = buildStudies([
+      { metadata: metadata({ sopInstanceUID: 'single', instanceNumber: 1 }) },
+      { metadata: metadata({ sopInstanceUID: 'cine', instanceNumber: 2, numberOfFrames: 3 }) }
+    ], true);
+    const series = studies[0].series[0];
+    expect(seriesFrames(series).map(({ instance, frameNumber }) => `${instance.id}:${frameNumber ?? '-'}`)).toEqual(['single:-', 'cine:1', 'cine:2', 'cine:3']);
+    expect(imageCount(series)).toBe(4);
   });
 
-  it('routes JPEG 2000 through the OpenJPEG decoder', () => {
-    const decoder = new OpenJpegDecoder();
-    expect(decoder.canDecode(TRANSFER_SYNTAX.jpeg2000Lossless)).toBe(true);
-    expect(decoder.canDecode(TRANSFER_SYNTAX.jpeg2000)).toBe(true);
+  it('counts a series by its reported size until its instances load', () => {
+    const series = { ...buildStudies([{ metadata: metadata() }], true)[0].series[0], instances: [], expectedImageCount: 240 };
+    expect(imageCount(series)).toBe(240);
+  });
+
+  it('opens the largest CT or MR series first, counting frames', () => {
+    const studies = buildStudies([
+      { metadata: metadata({ seriesInstanceUID: 'scout', sopInstanceUID: 'a', modality: 'CT' }) },
+      { metadata: metadata({ seriesInstanceUID: 'axial', sopInstanceUID: 'b', modality: 'CT', numberOfFrames: 50 }) },
+      { metadata: metadata({ seriesInstanceUID: 'us', sopInstanceUID: 'c', modality: 'US', numberOfFrames: 90 }) }
+    ], true);
+    expect(choosePrimarySeries(studies)?.seriesInstanceUID).toBe('axial');
   });
 });

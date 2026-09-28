@@ -5,7 +5,8 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'server-dist'] },
+  // test-data/ holds private local studies and scratch scripts; it is git-ignored.
+  { ignores: ['dist', 'coverage', 'server-dist', 'test-data'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ['examples/**/*.mjs'], languageOptions: { globals: globals.node } },

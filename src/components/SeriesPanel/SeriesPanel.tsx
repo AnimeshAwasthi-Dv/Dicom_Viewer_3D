@@ -5,6 +5,7 @@ import { useViewerStore } from '../../store/viewerStore';
 import type { Series } from '../../viewer/study/Series';
 import type { Study } from '../../viewer/study/Study';
 import { SeriesThumbnail } from './SeriesThumbnail';
+import { imageCount } from '../../viewer/study/StudyManager';
 
 type SeriesViewMode = 'grid' | 'list';
 
@@ -87,7 +88,7 @@ export function SeriesPanel({
                 <div className="series-info">
                   <span className="series-modality">{series.modality}</span>
                   <strong>{series.description}</strong>
-                  <span className="series-meta">S:{series.seriesNumber ?? '--'} - {series.instances.length} {series.instances.length === 1 ? 'image' : 'images'}</span>
+                  <span className="series-meta">S:{series.seriesNumber ?? '--'} - {imageCount(series)} {imageCount(series) === 1 ? 'image' : 'images'}</span>
                 </div>
               </button>
             ))}

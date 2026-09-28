@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DecodedFrame, DicomMetadata } from '../../types/dicom';
-import type { ImageSource } from '../dicom/ImageSource';
-import type { Series } from '../study/Series';
-import { FrameLoadScheduler } from '../cache/FrameLoadScheduler';
-import type { FrameRequestOptions } from '../cache/FrameRequestQueue';
+import type { DicomMetadata } from '../../types/dicom';
 import { NetworkEstimator } from '../cache/NetworkEstimator';
 import { canPreview, encodePreview, expandPreview } from '../dicom/PreviewFormat';
-import { RawDecoder } from '../codecs/RawDecoder';
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -65,6 +60,7 @@ describe('previews', () => {
     expect(canPreview(metadata(256, 256))).toBe(false);
     expect(canPreview(metadata(512, 512, { transferSyntaxUID: '1.2.840.10008.1.2.4.80' }))).toBe(false);
     expect(canPreview(metadata(512, 512, { samplesPerPixel: 3 }))).toBe(false);
+    expect(canPreview(metadata(512, 512, { numberOfFrames: 20 }))).toBe(false);
   });
 
   it('are a quarter of the size and expand back to the slice geometry with close values', () => {
@@ -76,66 +72,15 @@ describe('previews', () => {
     expect(preview.byteLength).toBe(16 + 256 * 256 * 2);
     const expanded = expandPreview(preview.slice().buffer, meta);
     expect(expanded.metadata.rows).toBe(512);
-    const frame = new RawDecoder().decode(expanded.metadata, expanded.pixelData);
-    expect(frame.modalityPixels).toHaveLength(512 * 512);
-    // Rescale is applied like the full slice's; away from edges the values match closely.
-    expect(frame.modalityPixels[100 * 512 + 100]).toBeCloseTo(200 - 1024, -1);
-    expect(frame.modalityPixels[250 * 512 + 250]).toBeCloseTo(1500 - 1024, -1);
+    const stored = new Int16Array(expanded.pixelData);
+    expect(stored).toHaveLength(512 * 512);
+    // Stored values, so the slice's own rescale applies; away from edges they match closely.
+    expect(stored[100 * 512 + 100]).toBeCloseTo(200, -1);
+    expect(stored[250 * 512 + 250]).toBeCloseTo(1500, -1);
   });
 
   it('are rejected when they do not match the slice', () => {
     const preview = encodePreview(metadata(512, 512), new Int16Array(512 * 512).buffer)!;
     expect(() => expandPreview(preview.slice().buffer, metadata(512, 400))).toThrow('does not match');
-  });
-});
-
-describe('scrubbing', () => {
-  function setup() {
-    const requests: Array<{ id: string; options?: FrameRequestOptions }> = [];
-    const source: ImageSource = {
-      mode: 'remote',
-      getStudyMetadata: async () => [],
-      metrics: () => ({ framesCached: 0, memoryBytes: 0 }),
-      getFrame: (id, options) => { requests.push({ id, options }); return new Promise<DecodedFrame>(() => undefined); }
-    };
-    const series = { instances: Array.from({ length: 100 }, (_, index) => ({ id: `s${index}` })) } as unknown as Series;
-    return { requests, source, series, scheduler: new FrameLoadScheduler() };
-  }
-
-  it('prefetches only a few slices ahead while scrubbing, cancelling the rest, and the full window once it pauses', () => {
-    vi.useFakeTimers();
-    const { requests, source, series, scheduler } = setup();
-    const noop = () => undefined;
-    scheduler.loadPriority(source, series, 50, noop, noop);
-    const full = requests.length;
-    expect(full).toBeGreaterThan(10);
-    requests.length = 0;
-    vi.advanceTimersByTime(20);
-    scheduler.loadPriority(source, series, 51, noop, noop);
-    expect(requests.map(request => request.id)).toEqual(['s51', 's52', 's53', 's54']);
-    // The previous window's requests were cancelled.
-    const previous = requests[0].options?.signal;
-    requests.length = 0;
-    vi.advanceTimersByTime(200);
-    expect(previous?.aborted).toBe(true);
-    expect(requests.length).toBeGreaterThan(10);
-    expect(requests[0].id).toBe('s51');
-  });
-
-  it('keeps the full window for cine', () => {
-    vi.useFakeTimers();
-    const { requests, source, series, scheduler } = setup();
-    const noop = () => undefined;
-    scheduler.loadPriority(source, series, 50, noop, noop, true);
-    vi.advanceTimersByTime(20);
-    requests.length = 0;
-    scheduler.loadPriority(source, series, 51, noop, noop, true);
-    expect(requests.length).toBeGreaterThan(10);
-  });
-
-  it('asks for a preview only for the slice on screen', () => {
-    const { requests, source, series, scheduler } = setup();
-    scheduler.loadPriority(source, series, 50, () => undefined, () => undefined);
-    expect(requests.filter(request => request.options?.onPreview).map(request => request.id)).toEqual(['s50']);
   });
 });

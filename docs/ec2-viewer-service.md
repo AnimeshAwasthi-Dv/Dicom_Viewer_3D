@@ -121,12 +121,12 @@ This replaces desired state. Start from the latest state and edit the fields you
 | Window / level | Per-viewport `windowWidth`, `windowCenter` |
 | Zoom, pan, rotate, flip, invert | Per-viewport `camera` |
 | Cine | `cinePlaying`, `cineFps` |
-| Tools | `activeTool`: windowLevel, pan, zoom, length, angle, rectangleRoi, ellipseRoi, probe, annotation |
+| Tools | `activeTool`: scroll, windowLevel, pan, zoom, length, angle, cobbAngle, bidirectional, probe, annotation, rectangleRoi, ellipseRoi, circleRoi, freehandRoi, splineRoi, livewire |
 | Measurements / annotations | Replace `measurements`; remove an entry to undo/delete, or send `[]` to clear |
 | MPR and volume | `mprOpen`, optional `mpr` settings below |
 | Dialogs | Optional `dialogs`: `dicomTagsOpen`, `shortcutsOpen`, `exportOpen` |
 
-Measurements use the existing viewer model; controller-supplied measurement values and labels are displayed as supplied, not recomputed by the API. Use browser-created measurements from reported state if you need the viewer's calculation. The server validates that their image/study references belong to the session.
+Measurement points are image pixel coordinates from the outer corner of the first pixel. Layouts: length 2 points, angle 3, cobbAngle 4, bidirectional 4 (long axis then short axis), probe 1, annotation 2 (arrow head then tail; 1 point is also accepted), rectangleRoi/ellipseRoi 2 opposite corners, circleRoi centre then edge, freehandRoi/splineRoi/livewire the outline (up to 1024 points; controller-supplied splines and livewires are drawn as freehand outlines). Multi-frame images take a 1-based `frameNumber`. The viewer measures controller-supplied shapes itself, so reported values and statistics come from the pixels. Use browser-created measurements from reported state if you need the viewer's calculation. The server validates that their image/study references belong to the session.
 
 Optional `mpr` settings expose the MPR slice planes and volume UI:
 
@@ -144,11 +144,11 @@ Optional `mpr` settings expose the MPR slice planes and volume UI:
   "volumeQuality": "hd",
   "fourDCine": false,
   "autoRotate": false,
-  "camera": { "position": [2.5, 1.8, 2.5], "target": [0, 0, 0] }
+  "camera": { "position": [0, -1.5, 0], "target": [0, 0, 0] }
 }
 ```
 
-Plane indexes are clamped to volume dimensions. Presets are `lung|soft|bone|mip`; rendering modes are `mpr|dvr|mip|minip|aip`; quality is `fast|hd|ultra`. Apply these with `mprOpen: true`. They take effect when the volume is loaded. The full schema is [src/types/remote.ts](../src/types/remote.ts).
+Plane indexes are clamped to volume dimensions. The 3D `camera` is relative to the volume: offsets from its centre in units of its largest extent. `slabThickness` is a fraction of that extent, applied to the MIP / MinIP / AIP modes. Presets are `lung|soft|bone|mip`; rendering modes are `mpr|dvr|mip|minip|aip`; quality is `fast|hd|ultra`. Apply these with `mprOpen: true`. They take effect when the volume is loaded. The full schema is [src/types/remote.ts](../src/types/remote.ts).
 
 An accepted PUT is not proof that pixels have rendered. `lastClientStatus.appliedRevision` confirms that the browser applied the viewing state; image downloads and MPR construction may still be running. Reported state/heartbeat is sent at most once per second when changing and every 10 seconds when idle. Check `seenAt` to detect stale browser status. With multiple browsers on one session, all receive controller updates; `lastClientStatus` is the most recently reporting browser, identified by `clientId`. Browser gestures are reported but are not automatically broadcast to other browsers. Native file pickers, browser download permissions and operating-system UI are outside this API.
 
@@ -164,6 +164,8 @@ See [control-viewer.mjs](../examples/control-viewer.mjs) for an executable porta
 
 - Import the archive as soon as it reaches S3, before the clinician opens it. Initial import must read, unzip, parse and write the archive; there is no claim of instantaneous first import.
 - The indexed path downloads only requested images. Nearby signed URLs are batched, downloads are deduplicated and limited to six at a time, and each viewport prefetches up to eight neighbors in each direction.
+- Set `FRAME_ANCESTORS` to the portal origin(s) so only the portal can embed the viewer. The CSP allows `'unsafe-eval'` because Cornerstone's decoders need it (no inline scripts, no other origins).
+- Imports keep compressed, colour and multi-frame images. Studies imported before this change are imported again on their next request, because the derived-format version changed.
 - DICOM parsing uses a reusable browser worker. Decoded frames have a 512 MiB cache budget; current viewport frames and MPR volume memory are additional. Detailed DICOM tags are excluded from the startup manifest and arrive with an image.
 - MPR requires the complete selected series. Its volume uses four bytes per voxel: 512×512×2000 alone is about 1.95 GiB, before textures/caches. Full-size MPR on large CT studies remains constrained by browser RAM/GPU capacity. 2D browsing does not require that allocation.
 - Source ZIP upload, report generation, clinician authentication, radiologist scheduling, DICOMweb and durable annotation storage remain portal responsibilities. Measurement state lasts only for the session unless the portal saves it.

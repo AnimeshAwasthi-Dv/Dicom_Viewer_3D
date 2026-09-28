@@ -9,5 +9,7 @@ export interface Series {
   seriesNumber?: number;
   instances: Instance[];
   thumbnailInstanceId?: string;
+  /** Image count reported before the series' instances are loaded (DICOMweb loads them on demand). */
+  expectedImageCount?: number;
 }
 

@@ -4,6 +4,8 @@ import type { Series } from '../viewer/study/Series';
 import type { Study } from '../viewer/study/Study';
 import { resetBackgroundWork } from '../viewer/cache/BackgroundWork';
 
+let stopListening: (() => void) | undefined;
+
 interface StudyStore {
   imageSource?: ImageSource;
   studies: Study[];
@@ -25,7 +27,10 @@ export const useStudyStore = create<StudyStore>((set) => ({
   setSource: (imageSource, studies) =>
     set((state) => {
       // Release the previous study's decode workers and cached frames.
-      if (state.imageSource && state.imageSource !== imageSource) state.imageSource.dispose?.();
+      if (state.imageSource && state.imageSource !== imageSource) state.imageSource.dispose();
+      stopListening?.();
+      // Sources that load series on demand (DICOMweb) publish the updated studies.
+      stopListening = imageSource.subscribe((studies) => useStudyStore.setState({ studies }));
       // The new study's thumbnails wait for its first image.
       resetBackgroundWork();
       return {
@@ -39,7 +44,7 @@ export const useStudyStore = create<StudyStore>((set) => ({
     }),
   selectSeries: (seriesId) => set(state => ({ selectedSeriesId: seriesId, selectedStudyId: state.studies.find(study => study.series.some(series => series.id === seriesId))?.id })),
   addError: (error) => set((state) => ({ errors: [...state.errors.slice(-4), error] })),
-  reset: () => set({ imageSource: undefined, studies: [], selectedStudyId: undefined, selectedSeriesId: undefined, loading: undefined, errors: [] })
+  reset: () => set(() => { stopListening?.(); stopListening = undefined; return { imageSource: undefined, studies: [], selectedStudyId: undefined, selectedSeriesId: undefined, loading: undefined, errors: [] }; })
 }));
 
 export function selectCurrentSeries(studies: Study[], seriesId?: string): Series | undefined {

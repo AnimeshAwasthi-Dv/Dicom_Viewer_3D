@@ -1,4 +1,4 @@
-import type { ToolId } from './BaseTool';
+import type { ToolId } from './toolIds';
 
 export interface KeyboardActions {
   setTool(tool: ToolId): void;
@@ -23,7 +23,8 @@ export interface KeyboardActions {
 
 export class KeyboardShortcutManager {
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+    if (event.altKey || event.metaKey || (event.ctrlKey && event.key.toLowerCase() !== 'z')) return;
     const key = event.key.toLowerCase();
     const handled = true;
     if (event.ctrlKey && key === 'z') this.actions.undoLast();
@@ -37,6 +38,9 @@ export class KeyboardShortcutManager {
     else if (key === 't') this.actions.setTool('annotation');
     else if (key === 'r') this.actions.setTool('rectangleRoi');
     else if (key === 'e') this.actions.setTool('ellipseRoi');
+    else if (key === 'b') this.actions.setTool('bidirectional');
+    else if (key === 'c') this.actions.setTool('circleRoi');
+    else if (key === 'f') this.actions.setTool('freehandRoi');
     else if (key === 'i') this.actions.toggleInvert();
     else if (key === 'o') this.actions.rotate();
     else if (key === 'h') this.actions.flipHorizontal();

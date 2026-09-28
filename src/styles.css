@@ -426,7 +426,8 @@ button, select { font: inherit; }
 .layout-2x2 { grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr); }
 
 .viewport-wrap { position: relative; min-width: 0; min-height: 0; background: #000; overflow: hidden; }
-.viewport-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+/* The element Cornerstone renders into; it adds its own canvas and SVG annotation layer inside. */
+.cs-viewport { position: absolute; inset: 0; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
 .viewport-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #718494; font-size: 13px; pointer-events: none; }
 /* Shown while the next slice loads; the previous slice stays visible underneath. */
 .viewport-loading { position: absolute; top: 12px; right: 12px; z-index: 4; width: 14px; height: 14px; border: 2px solid #53bcea55; border-top-color: #53bcea; border-radius: 50%; animation: viewport-spin .7s linear infinite; pointer-events: none; }
@@ -549,12 +550,7 @@ button, select { font: inherit; }
   overflow: hidden;
   background: #000;
 }
-.mpr-plane canvas {
-  width: 100%;
-  height: 100%;
-  display: block;
-  touch-action: none;
-}
+
 .mpr-model {
   grid-column: 1;
   grid-row: 1 / -1;
@@ -567,10 +563,10 @@ button, select { font: inherit; }
 .mpr-axial { grid-row: 1; }
 .mpr-coronal { grid-row: 2; }
 .mpr-sagittal { grid-row: 3; }
-.mpr-model canvas {
+.mpr-model .cs-viewport {
   cursor: grab;
 }
-.mpr-model canvas:active {
+.mpr-model .cs-viewport:active {
   cursor: grabbing;
 }
 .mpr-plane-overlay {
@@ -591,13 +587,26 @@ button, select { font: inherit; }
 .mpr-plane-overlay span {
   color: rgba(220, 236, 248, .82);
 }
-.mpr-plane-slider {
-  position: absolute;
-  left: 50%;
-  bottom: 9px;
-  width: min(340px, calc(100% - 38px));
-  transform: translateX(-50%);
-  accent-color: #63cfff;
+.mpr-tools {
+  display: inline-flex;
+  gap: 4px;
+}
+.mpr-tools button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #253341;
+  border-radius: 5px;
+  background: #0b1219;
+  color: #cbd8e5;
+  padding: 0 9px;
+  cursor: pointer;
+}
+.mpr-tools button.active {
+  border-color: #3f8db5;
+  background: #102b3c;
+  color: #fff;
 }
 .mpr-controls {
   min-height: 46px;
@@ -680,6 +689,7 @@ button, select { font: inherit; }
   outline: none;
 }
 .annotation-editor input:focus { border-color: #64d7ff; }
+.annotation-dialog { position: fixed; top: 38%; left: 50%; transform: translate(-50%, -50%); }
 .annotation-editor button {
   height: 28px;
   border: 1px solid #315066;

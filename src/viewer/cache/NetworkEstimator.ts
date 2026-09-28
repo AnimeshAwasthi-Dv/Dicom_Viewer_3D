@@ -1,4 +1,9 @@
-import type { QueueLimits } from './FrameRequestQueue';
+export interface QueueLimits {
+  /** Downloads running at once. */
+  total: number;
+  /** Of those, how many may be prefetch work, so the image on screen always has room and bandwidth. */
+  background: number;
+}
 
 type Connection = { effectiveType?: string; downlink?: number; rtt?: number; addEventListener?(type: 'change', listener: () => void): void };
 

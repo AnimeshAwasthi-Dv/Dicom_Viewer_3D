@@ -2,6 +2,7 @@ import { Download, FileJson, Image, X } from 'lucide-react';
 import { useUiStore } from '../../store/uiStore';
 import { selectCurrentSeries, useStudyStore } from '../../store/studyStore';
 import { useViewerStore } from '../../store/viewerStore';
+import { imageCount, seriesFrames } from '../../viewer/study/StudyManager';
 
 function safeName(value: string | undefined, fallback: string): string {
   return (value?.trim() || fallback).replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -25,7 +26,7 @@ export function ExportDialog(): JSX.Element | null {
   const viewport = useViewerStore((state) => state.viewports[0]);
   const study = studies[0];
   const series = selectCurrentSeries(studies, selectedSeriesId);
-  const currentInstance = series?.instances[viewport.instanceIndex];
+  const currentInstance = series ? seriesFrames(series)[viewport.instanceIndex]?.instance : undefined;
 
   if (!open) return null;
 
@@ -55,7 +56,7 @@ export function ExportDialog(): JSX.Element | null {
         description: series.description,
         modality: series.modality,
         seriesNumber: series.seriesNumber,
-        imageCount: series.instances.length
+        imageCount: imageCount(series)
       },
       currentInstance: currentInstance?.metadata,
       instances: series.instances.map((instance) => instance.metadata)
@@ -84,7 +85,7 @@ export function ExportDialog(): JSX.Element | null {
         description: item.description,
         modality: item.modality,
         seriesNumber: item.seriesNumber,
-        imageCount: item.instances.length,
+        imageCount: imageCount(item),
         instances: item.instances.map((instance) => instance.metadata)
       }))
     });
@@ -106,7 +107,7 @@ export function ExportDialog(): JSX.Element | null {
             <Image size={18} />
             <span>
               <strong>Viewport PNG</strong>
-              <small>Save the current image view with window, zoom, and orientation.</small>
+              <small>Save the current view with its measurements, window, zoom and orientation.</small>
             </span>
           </button>
           <button disabled={!series} onClick={exportSeriesManifest}>

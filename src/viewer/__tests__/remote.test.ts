@@ -6,9 +6,7 @@ import { useViewerStore } from '../../store/viewerStore';
 import { useMeasurementStore } from '../../store/measurementStore';
 import { useUiStore } from '../../store/uiStore';
 import { buildStudies } from '../study/StudyManager';
-import { FrameLoadScheduler } from '../cache/FrameLoadScheduler';
-import type { ImageSource } from '../dicom/ImageSource';
-import type { DecodedFrame, DicomMetadata } from '../../types/dicom';
+import type { DicomMetadata } from '../../types/dicom';
 
 const metadata: DicomMetadata = {
   fileName: 'a.dcm', studyInstanceUID: 'study', seriesInstanceUID: 'series', sopInstanceUID: 'instance',
@@ -42,19 +40,17 @@ describe('remote viewing state', () => {
     expect(useStudyStore.getState().selectedStudyId).toBe('study');
     expect(captured.activeTool).toBe('annotation');
   });
-  it('does not display a stale frame after navigation cancels a pending load', async () => {
-    const series = buildStudies([{ metadata }], true)[0].series[0];
-    let resolve!: (frame: DecodedFrame) => void;
-    const source: ImageSource = {
-      getStudyMetadata: async () => [], metrics: () => ({ framesCached: 0, memoryBytes: 0 }),
-      getFrame: () => new Promise<DecodedFrame>(done => { resolve = done; })
-    };
-    const received: DecodedFrame[] = [];
-    const scheduler = new FrameLoadScheduler();
-    const loading = scheduler.loadPriority(source, series, 0, (_index, frame) => received.push(frame), () => undefined);
-    scheduler.cancel();
-    resolve({ metadata, storedPixels: new Uint16Array(1), modalityPixels: new Float32Array(1), min: 0, max: 0, decodeTimeMs: 0 });
-    await loading;
-    expect(received).toHaveLength(0);
+  it('accepts the new measurement tools and multi-frame references, and older single-point notes', () => {
+    const base = { studyInstanceUID: 'study', seriesInstanceUID: 'series', sopInstanceUID: 'instance', createdAt: '2026-09-28' };
+    const parsed = remoteStateSchema.parse({
+      layout: '1x1', viewports: [{ seriesId: 'study:series', instanceIndex: 0 }], activeTool: 'bidirectional',
+      measurements: [
+        { ...base, id: 'b', type: 'bidirectional', frameNumber: 4, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 5, y: -3 }, { x: 5, y: 3 }], value: 10, secondaryValue: 6 },
+        { ...base, id: 'f', type: 'freehandRoi', points: Array.from({ length: 600 }, (_, index) => ({ x: Math.cos(index / 100), y: Math.sin(index / 100) })) },
+        { ...base, id: 'n', type: 'annotation', points: [{ x: 1, y: 1 }], label: 'old controller' }
+      ]
+    });
+    expect(parsed.measurements.map((measurement) => measurement.type)).toEqual(['bidirectional', 'freehandRoi', 'annotation']);
+    expect(() => remoteStateSchema.parse({ ...parsed, activeTool: 'paintbrush' })).toThrow();
   });
 });

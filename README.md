@@ -39,38 +39,31 @@ npm run test
 npm run build
 ```
 
+## Imaging Engine
+
+Rendering, decoding, tools and MPR run on [Cornerstone3D](https://www.cornerstonejs.org/) (the engine behind OHIF, also used by the RadAgent viewer), inside this React application. The engine is shared by three study sources:
+
+- **Local files**: files, folders, ZIPs and drag/drop; nothing leaves the device.
+- **Viewer service sessions** (`?session=<id>#token=…`): S3 ZIP imports with remote control, see the [EC2 guide](docs/ec2-viewer-service.md).
+- **DICOMweb** (`?study=<StudyInstanceUID>`, optional same-origin `&dicomweb=<root>`, default `/dicom-web`): Orthanc behind the RadAgent imaging gateway, which serves this build at `/rad-viewer/`. In development, `DICOMWEB_PROXY=http://localhost:8042 npm run dev` proxies `/dicom-web` to a local server.
+
 ## Supported DICOM Features
 
-- Local browser file, multi-file, folder, and drag/drop loading
-- Study and series grouping
-- Geometry-aware slice sorting using Image Position Patient and Image Orientation Patient when available
-- Uncompressed grayscale rendering
-- MONOCHROME1 and MONOCHROME2
-- Rescale Slope and Rescale Intercept for modality values, including CT HU
-- Window/level, stack scroll, pan, zoom, rotate, flip, invert
-- Length, angle, rectangle ROI, ellipse ROI, and probe measurements
-- PixelSpacing-aware length measurements
-- ROI statistics over modality values
-- Cine playback with configurable FPS in code/state
-
-## Transfer Syntaxes
-
-Currently enabled:
-
-- Implicit VR Little Endian: `1.2.840.10008.1.2`
-- Explicit VR Little Endian: `1.2.840.10008.1.2.1`
-- JPEG-LS Lossless: `1.2.840.10008.1.2.4.80`
-
-Other compressed syntaxes are detected and reported without crashing. The codec architecture is prepared for JPEG, JPEG Lossless, JPEG2000, HTJ2K, and RLE.
+- CT, MR, CR/DX, MG, US, XA, NM, PT, secondary capture; greyscale and colour (RGB, YBR, palette colour)
+- Multi-frame images (cine ultrasound, XA, enhanced objects) with cine playback
+- Transfer syntaxes: implicit/explicit little endian, big endian, deflate, JPEG Baseline/Extended/Lossless, JPEG-LS, JPEG 2000, HTJ2K, RLE
+- Geometry-aware slice sorting, rescale to modality values (CT HU), VOI presets from the file and per modality
+- Window/level, stack scroll, pan, zoom, rotate, flip, invert, 1x1–2x2 layouts, orientation markers
+- Measurements: length, angle, Cobb angle, bidirectional (long/short axis), probe, arrow annotation, rectangle, ellipse, circle, freehand, spline and livewire ROIs with statistics
+- GPU MPR with linked crosshairs, slab MIP/MinIP/average, and 3D volume rendering
+- PNG capture with measurements burned in; DICOM tag browser
 
 ## Known Limitations
 
-- No PACS/DICOMweb, clinician identity provider, reporting, scheduling or billing; the service uses scoped session tokens and expects identity/study authorization from the calling portal
-- JPEG-LS is supported through CharLS; other compressed transfer syntaxes are not decoded yet
-- No multiframe DICOM support yet
-- Orientation markers are placeholders pending full patient orientation mapping
-- Series thumbnails use a generated diagnostic placeholder instead of decoded miniature rendering
-- WebGPU, MPR, 3D, fusion, SEG, and SR are intentionally out of scope for this milestone
+- No clinician identity provider, reporting, scheduling or billing; access comes from the portal (viewer-service sessions) or the RadAgent gateway (DICOMweb)
+- Measurements last for the session; they are not saved as DICOM SR
+- Low-resolution previews built at import are not yet shown while full slices download
+- MPR and 3D need the whole series in memory: very large CT series remain limited by browser and GPU memory on phones
 
 ## Project Architecture
 

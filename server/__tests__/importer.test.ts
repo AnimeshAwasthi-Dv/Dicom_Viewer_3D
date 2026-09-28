@@ -22,6 +22,18 @@ describe('ZIP import', () => {
     for (const instance of result.instances) expect(instance.key).toMatch(/^derived\/study-id\/instances\/[a-f0-9]{64}\.dcm$/);
     expect(write).toHaveBeenCalledTimes(2);
   });
+  it('keeps compressed and multi-frame images, which the viewer now decodes', async () => {
+    const write = vi.fn(async () => undefined);
+    const result = await importZip(await archive({
+      'lossless.dcm': dicomFile('1.2.3.4.1', undefined, { transferSyntax: '1.2.840.10008.1.2.4.70' }),
+      'rle.dcm': dicomFile('1.2.3.4.2', undefined, { transferSyntax: '1.2.840.10008.1.2.5' }),
+      'cine.dcm': dicomFile('1.2.3.4.3', undefined, { frames: 4 }),
+      'unknown.dcm': dicomFile('1.2.3.4.4', undefined, { transferSyntax: '1.2.3.999' })
+    }), 'study-id', 'derived/', limits, write, async () => undefined);
+    expect(result.instances.map(instance => instance.metadata.sopInstanceUID).sort()).toEqual(['1.2.3.4.1', '1.2.3.4.2', '1.2.3.4.3']);
+    expect(result.instances.find(instance => instance.metadata.sopInstanceUID === '1.2.3.4.3')?.metadata.numberOfFrames).toBe(4);
+    expect(result.skippedFiles).toBe(1);
+  });
   it('reads SeriesNumber and InstanceNumber as text, not binary', async () => {
     const result = await importZip(await archive({ 'a.dcm': dicomFile('1.2.3.4.1', { series: '12', instance: '20' }), 'b.dcm': dicomFile('1.2.3.4.2', { series: '1', instance: '3' }) }), 'id', 'derived/', limits, async () => undefined, async () => undefined);
     expect(result.instances.map(instance => [instance.metadata.seriesNumber, instance.metadata.instanceNumber])).toEqual([[12, 20], [1, 3]]);

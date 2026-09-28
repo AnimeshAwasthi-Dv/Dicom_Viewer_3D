@@ -224,6 +224,8 @@ function toMetadataElements(dataSet: dicomParser.DataSet): DicomElementMap {
   addDecimalString(elements, dataSet, tagMap.pixelSpacing[0], tagMap.pixelSpacing[1]);
   addDecimalString(elements, dataSet, tagMap.windowCenter[0], tagMap.windowCenter[1]);
   addDecimalString(elements, dataSet, tagMap.windowWidth[0], tagMap.windowWidth[1]);
+  addString(elements, dataSet, '00281055', 'x00281055');
+  addIntString(elements, dataSet, '00280008', 'x00280008');
   addDecimalString(elements, dataSet, tagMap.rescaleIntercept[0], tagMap.rescaleIntercept[1]);
   addDecimalString(elements, dataSet, tagMap.rescaleSlope[0], tagMap.rescaleSlope[1]);
   return elements;
@@ -238,7 +240,8 @@ function tagLabel(tag: string): string {
   return `(${normalized.slice(0, 4)},${normalized.slice(4)})`;
 }
 
-function nameForTag(key: string): string {
+/** Standard name of a tag given as `x00100010`, `00100010` or with separators stripped. */
+export function nameForTag(key: string): string {
   const normalized = normalizeTag(key);
   if (tagNames[normalized]) return tagNames[normalized];
   if (key === 'xfffee000') return 'Item';
@@ -267,7 +270,8 @@ function elementValue(dataSet: dicomParser.DataSet, element: dicomParser.Element
   return `[${element.length.toLocaleString()} bytes]`;
 }
 
-function extractRawTags(dataSet: dicomParser.DataSet): DicomTag[] {
+/** Every element of a parsed file except pixel data, for display. */
+export function extractRawTags(dataSet: dicomParser.DataSet): DicomTag[] {
   return Object.entries(dataSet.elements)
     .map(([key, element]) => {
       return {
@@ -287,8 +291,13 @@ function sliceByteArray(byteArray: dicomParser.ByteArray, offset: number, length
   return Uint8Array.from(view.subarray(offset, offset + length)).buffer;
 }
 
+export interface ParseOptions {
+  /** Copy the (first frame's) pixel data out of the file. Header-only callers skip the copy. Default true. */
+  pixelData?: boolean;
+}
+
 export class DicomParser {
-  parse(buffer: ArrayBuffer, fileName = 'local.dcm'): ParsedDicomFile {
+  parse(buffer: ArrayBuffer, fileName = 'local.dcm', options: ParseOptions = {}): ParsedDicomFile {
     const dataSet = dicomParser.parseDicom(new Uint8Array(buffer), { TransferSyntaxUID: TRANSFER_SYNTAX.implicitLittleEndian });
     const elements = toMetadataElements(dataSet);
     const transferSyntaxUID = String(elements.get('00020010') ?? TRANSFER_SYNTAX.implicitLittleEndian).trim();
@@ -303,6 +312,7 @@ export class DicomParser {
 
     if (!pixelDataElement) return { metadata, error: 'Missing PixelData element.' };
     if (!isSupportedTransferSyntax(transferSyntaxUID)) return { metadata, error: `Unsupported transfer syntax: ${transferSyntaxUID}` };
+    if (options.pixelData === false) return { metadata };
     if (pixelDataElement.encapsulatedPixelData) {
       const frame = dicomParser.readEncapsulatedPixelData(dataSet, pixelDataElement, 0);
       return { metadata, pixelData: sliceByteArray(frame, 0, frame.byteLength) };

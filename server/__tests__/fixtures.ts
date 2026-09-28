@@ -1,4 +1,5 @@
 import type { Config } from '../config';
+import type { Tenant } from '../tenants';
 import type { StudyManifest } from '../../src/types/remote';
 
 export const studyId = '11111111-1111-4111-8111-111111111111';
@@ -17,6 +18,17 @@ export const config: Config = {
   S3_SOURCE_PREFIX: 'studies/', S3_DERIVED_PREFIX: 'derived/', SESSION_TTL_SECONDS: 3600,
   MAX_ZIP_BYTES: 100000, MAX_ENTRY_BYTES: 100000, MAX_EXPANDED_BYTES: 200000, MAX_ZIP_ENTRIES: 10
 };
+/** DecXpert on AWS S3 (the single-product setup) and RadAgent on Cloudflare R2. */
+export const tenants: Tenant[] = [
+  {
+    id: 'default', apiKey: config.SERVICE_API_KEY!, storage: { region: 'ap-south-1', forcePathStyle: false },
+    sources: { default: { bucket: 'test-bucket', prefix: 'studies/' } }, derived: { bucket: 'test-bucket', prefix: 'derived/' }, frameAncestors: []
+  },
+  {
+    id: 'radagent', apiKey: 'radagent-test-secret-with-32-characters!', storage: { endpoint: 'https://account.r2.cloudflarestorage.com', region: 'auto', credentials: { accessKeyId: 'a', secretAccessKey: 'b' }, forcePathStyle: true },
+    sources: { default: { bucket: 'radagent-scans', prefix: 'imaging/' } }, derived: { bucket: 'radagent-scans', prefix: 'viewer-derived/' }, frameAncestors: ['https://radagent.example.com']
+  }
+];
 
 export function dicomFile(sopId = '1.2.3.4.1', numbers?: { series: string; instance: string }, options: { transferSyntax?: string; frames?: number } = {}): Buffer {
   function element(group: number, tag: number, vr: string, value: string | number | Buffer) {

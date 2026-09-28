@@ -1,15 +1,20 @@
 import { z } from 'zod';
 import { Redis, Cluster } from 'ioredis';
+import { MODALITIES, readTenantsFile, type Tenant } from './tenants';
 
 const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().default('127.0.0.1'),
   PUBLIC_URL: z.url(),
-  SERVICE_API_KEY: z.string().min(32),
+  // Several products (DecXpert, RadAgent…) on one viewer: a JSON file of tenants, each with its own API key and
+  // storage (AWS S3 or an S3-compatible store such as Cloudflare R2). See docs/ec2-viewer-service.md.
+  TENANTS_FILE: z.string().min(1).optional(),
+  // Single-product setup, used when TENANTS_FILE is not set: one tenant, "default", from the variables below.
+  SERVICE_API_KEY: z.string().min(32).optional(),
   REDIS_URL: z.string().regex(/^rediss?:\/\//),
   REDIS_CLUSTER_MODE: z.enum(['true', 'false']).default('false').transform(v => v === 'true'),
-  AWS_REGION: z.string().min(1),
-  S3_BUCKET: z.string().min(3),
+  AWS_REGION: z.string().min(1).optional(),
+  S3_BUCKET: z.string().min(3).optional(),
   S3_CT_STUDIES_BUCKET: z.string().optional(),
   S3_CT_STUDIES_PREFIX: z.string().optional(),
   S3_MRI_STUDIES_BUCKET: z.string().optional(),
@@ -18,7 +23,7 @@ const schema = z.object({
   S3_XRAY_STUDIES_PREFIX: z.string().optional(),
   S3_MAMMOGRAPHY_STUDIES_BUCKET: z.string().optional(),
   S3_MAMMOGRAPHY_STUDIES_PREFIX: z.string().optional(),
-  S3_SOURCE_PREFIX: z.string().min(1).refine(v => v.endsWith('/'), 'Must end in /'),
+  S3_SOURCE_PREFIX: z.string().min(1).refine(v => v.endsWith('/'), 'Must end in /').optional(),
   S3_DERIVED_PREFIX: z.string().default('viewer-derived/').refine(v => v.endsWith('/'), 'Must end in /'),
   SESSION_TTL_SECONDS: z.coerce.number().int().min(60).max(86400).default(3600),
   MAX_ZIP_BYTES: z.coerce.number().int().positive().default(8 * 1024 ** 3),
@@ -37,9 +42,30 @@ export function readConfig(): Config {
   const url = new URL(config.PUBLIC_URL);
   if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('PUBLIC_URL must use HTTPS outside localhost');
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('PUBLIC_URL must be an origin without credentials, path, query or fragment');
-  if (config.SERVICE_API_KEY.startsWith('replace-')) throw new Error('Generate a new SERVICE_API_KEY before starting');
-  if (config.S3_SOURCE_PREFIX.startsWith(config.S3_DERIVED_PREFIX) || config.S3_DERIVED_PREFIX.startsWith(config.S3_SOURCE_PREFIX)) throw new Error('S3 source and derived prefixes must not overlap');
   return config;
+}
+
+/** The configured tenants: from TENANTS_FILE, or the single "default" tenant the S3_* variables describe. */
+export function readTenants(config: Config): Tenant[] {
+  if (config.TENANTS_FILE) return readTenantsFile(config.TENANTS_FILE);
+  const { SERVICE_API_KEY, S3_BUCKET, S3_SOURCE_PREFIX, AWS_REGION } = config;
+  if (!SERVICE_API_KEY || !S3_BUCKET || !S3_SOURCE_PREFIX || !AWS_REGION) throw new Error('Set TENANTS_FILE, or SERVICE_API_KEY, AWS_REGION, S3_BUCKET and S3_SOURCE_PREFIX');
+  if (SERVICE_API_KEY.startsWith('replace-')) throw new Error('Generate a new SERVICE_API_KEY before starting');
+  if (S3_SOURCE_PREFIX.startsWith(config.S3_DERIVED_PREFIX) || config.S3_DERIVED_PREFIX.startsWith(S3_SOURCE_PREFIX)) throw new Error('S3 source and derived prefixes must not overlap');
+  const sources: Tenant['sources'] = { default: { bucket: S3_BUCKET, prefix: S3_SOURCE_PREFIX } };
+  for (const modality of MODALITIES) {
+    const bucket = config[`S3_${modality}_STUDIES_BUCKET`];
+    const prefix = config[`S3_${modality}_STUDIES_PREFIX`];
+    if (bucket && prefix) sources[modality] = { bucket, prefix: `${prefix.replace(/\/+$/, '')}/` };
+  }
+  return [{
+    id: 'default',
+    apiKey: SERVICE_API_KEY,
+    storage: { region: AWS_REGION, forcePathStyle: false },
+    sources,
+    derived: { bucket: S3_BUCKET, prefix: config.S3_DERIVED_PREFIX },
+    frameAncestors: []
+  }];
 }
 
 export function redisConnection(config: Config, blocking = false): Redis | Cluster {
@@ -62,12 +88,4 @@ export function redisConnection(config: Config, blocking = false): Redis | Clust
     : new Redis(options);
   client.on('error', () => console.error('Redis connection error'));
   return client;
-}
-
-export type Modality = 'CT' | 'MRI' | 'XRAY' | 'MAMMOGRAPHY';
-export function sourceLocation(config: Config, modality?: Modality): { bucket: string; prefix: string } {
-  const bucket = modality ? config[`S3_${modality}_STUDIES_BUCKET`] : config.S3_BUCKET;
-  const prefix = modality ? config[`S3_${modality}_STUDIES_PREFIX`] : config.S3_SOURCE_PREFIX;
-  if (!bucket || !prefix) throw new Error('Modality storage has not been configured');
-  return { bucket, prefix: `${prefix.replace(/\/+$/, '')}/` };
 }

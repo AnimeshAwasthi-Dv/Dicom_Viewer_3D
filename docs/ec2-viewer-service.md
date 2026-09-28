@@ -30,14 +30,50 @@ For example, an input is `CT/study-123/archive.zip`, not an `s3://` URL. Prefixe
 
 An import's ID is derived from the source bucket, key, object version (ETag, plus VersionId when bucket versioning is on), and the derived-frame format version. Posting the same ZIP again returns the existing study immediately (`200`, `"reused": true`) instead of unpacking it again, so the portal can call import every time a clinician opens a scan. A failed import runs again under the same ID. Replacing the ZIP at the same key, or upgrading the derived-frame format, gives a new ID and a fresh import while preserving the prior derived objects. Do not overwrite a source ZIP while its import is running.
 
+## One viewer for DecXpert and RadAgent (tenants)
+
+One deployment serves several products. Each product is a *tenant* with its own API key, its own object storage and the portal origins allowed to embed its links. Set `TENANTS_FILE` to a JSON file like [tenants.example.json](../deploy/tenants.example.json); without it, the variables in `.env` describe a single tenant named `default` exactly as before.
+
+| | DecXpert | RadAgent |
+| --- | --- | --- |
+| Store | AWS S3 (`storage.region`, credentials from the EC2 instance role) | Cloudflare R2 (`storage.endpoint` plus an R2 API token's access keys) |
+| Source ZIPs | Per modality (`sources.CT`, `sources.MRI`, …) | One prefix (`sources.default`), for example `imaging/` |
+| Derived images | `derived` bucket and prefix in DecXpert's S3 | `derived` bucket and prefix in RadAgent's R2 |
+| API key | `DECXPERT_VIEWER_API_KEY` | `RADAGENT_VIEWER_API_KEY` |
+
+- A tenant's key only sees that tenant's studies and sessions; another tenant's IDs answer `404`. Import IDs include the tenant, so the same bucket and key in two stores are different studies.
+- Images never cross tenants: each study is extracted into its own tenant's store, and the browser downloads it from there with short-lived signed URLs.
+- Secrets in the file can be written as `env:NAME` and read from the environment, so the file itself can hold no secrets.
+- `frameAncestors` of all tenants together form the page's `frame-ancestors`, so list every portal origin (production and staging) that embeds the viewer. The CSP also allows each tenant's storage endpoint for image downloads.
+- Sessions and queued imports created before tenants were configured belong to `default`. When switching an existing DecXpert deployment to a tenants file, name its tenant `default` to keep them, or let them expire.
+
+### Cloudflare R2 for a tenant
+
+R2 speaks the S3 API, so nothing else changes:
+
+1. Create an R2 API token with **Object Read & Write** on the tenant's bucket (the viewer reads source ZIPs and writes derived objects). Put its access key ID and secret in the environment and refer to them from the tenants file.
+2. Set `storage.endpoint` to `https://<account-id>.r2.cloudflarestorage.com`. The region defaults to `auto` and addressing to path-style, which R2 requires.
+3. Apply [r2-cors.json](../deploy/r2-cors.json), with the viewer's origin, to the bucket that holds `derived` (R2 dashboard → bucket → Settings → CORS policy). The browser downloads images from R2 directly.
+4. Keep `derived.prefix` separate from the source prefix. Signed URLs use the `r2.cloudflarestorage.com` endpoint, not a public bucket domain, so the bucket stays private.
+
+### RadAgent integration
+
+RadAgent calls the same API as the DecXpert portal, with its own key, instead of the Orthanc ingest and gateway:
+
+1. After a scan ZIP is uploaded to R2 (for example `imaging/<scan_id>/study.zip`), `POST /api/v1/studies` with `{ "zipKey": "imaging/<scan_id>/study.zip" }`. Calling it again for the same ZIP is cheap: the existing import is reused.
+2. Poll `GET /api/v1/studies/<id>` until `status` is `completed`.
+3. After RadAgent's own login, claim and hospital checks, `POST /api/v1/sessions` with `{ "studyId": "<id>" }` and put the returned `viewerUrl` in the radiologist's iframe or a new tab.
+
+The viewer still accepts DICOMweb `?study=<uid>` links, so the Orthanc path can be retired gradually.
+
 ## EC2 deployment
 
 1. Use an EC2 host with Docker Engine and the Compose plugin. Place the viewer, portal, Redis and S3 in the same AWS region where practical. The supplied Redis hostname contains `cac1`, which appears to indicate Canada Central; verify it in AWS. A Mumbai-to-Canada connection needs cross-region private routing and adds latency. Prefer a Redis endpoint in Mumbai for this deployment.
-2. Attach an EC2 IAM instance role with the S3 policy in [viewer-iam-policy.json](../deploy/viewer-iam-policy.json). This uses the AWS SDK credential chain; no AWS access key belongs in the frontend or image. Container access to IMDSv2 may require an instance metadata hop limit of 2. If S3 uses SSE-KMS, grant the role the corresponding KMS decrypt/encrypt/data-key permissions through your key policy as well. [AWS EC2 IAM roles](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html)
-3. Copy `.env.example` to `.env`. Set `PUBLIC_URL` to the actual HTTPS viewer origin. Generate a new independent `SERVICE_API_KEY` with `openssl rand -hex 32`; store it on the viewer and portal servers only. Set the Redis URL, credentials if required, and `REDIS_CLUSTER_MODE=true` for ElastiCache Serverless. Do not reuse any credential pasted into chat.
+2. For AWS S3 tenants, attach an EC2 IAM instance role with the S3 policy in [viewer-iam-policy.json](../deploy/viewer-iam-policy.json). This uses the AWS SDK credential chain; no AWS access key belongs in the frontend or image. Container access to IMDSv2 may require an instance metadata hop limit of 2. If S3 uses SSE-KMS, grant the role the corresponding KMS decrypt/encrypt/data-key permissions through your key policy as well. [AWS EC2 IAM roles](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html)
+3. Copy `.env.example` to `.env`. Set `PUBLIC_URL` to the actual HTTPS viewer origin. Generate a new independent API key per tenant (`SERVICE_API_KEY` in a single-product setup) with `openssl rand -hex 32`; store each only on the viewer and on that product's server. For several products, set `TENANTS_FILE` (see above). Set the Redis URL, credentials if required, and `REDIS_CLUSTER_MODE=true` for ElastiCache Serverless. Do not reuse any credential pasted into chat.
 4. Allow the viewer security group to reach Redis on TLS port 6379 and S3. ElastiCache Serverless requires TLS and cluster protocol; the implementation uses a cluster client and a BullMQ hash-tagged queue prefix. Keep Redis private. [AWS connection requirements](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/wwe-troubleshooting.html), [BullMQ cluster configuration](https://docs.bullmq.io/patterns/redis-cluster)
 5. Put an HTTPS Application Load Balancer (or an HTTPS reverse proxy) in front of API port 3000. Restrict inbound 3000 to the ALB and any intentionally allowed private controller path. Set the health check to `/healthz`. Route `/api/*` and the frontend to the same service. Disable buffering for `/api/viewer/*/events`; the server emits a heartbeat every 10 seconds. With nginx, use `proxy_buffering off` and `proxy_read_timeout 60s` for this path. Use HTTPS for the controller API too.
-6. Apply [s3-cors.json](../deploy/s3-cors.json) to the derived bucket after replacing the example viewer origin. Keep S3 Block Public Access enabled. Merge with any existing CORS rules instead of replacing other applications' rules.
+6. Apply [s3-cors.json](../deploy/s3-cors.json) (or [r2-cors.json](../deploy/r2-cors.json) for R2) to each tenant's derived bucket after replacing the example viewer origin. Keep S3 Block Public Access enabled. Merge with any existing CORS rules instead of replacing other applications' rules.
 7. Start both processes:
 
    ```bash

@@ -10,3 +10,5 @@ test-data/
 !.env.example
 server-dist/
 *.zip
+# Deployment tenants (may hold secrets); see deploy/tenants.example.json
+config/

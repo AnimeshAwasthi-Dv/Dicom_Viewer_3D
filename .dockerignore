@@ -8,3 +8,4 @@ server-dist
 *.log
 test-data
 coverage
+config

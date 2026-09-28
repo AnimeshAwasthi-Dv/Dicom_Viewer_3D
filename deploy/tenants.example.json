@@ -1,0 +1,29 @@
+{
+  "tenants": [
+    {
+      "id": "decxpert",
+      "apiKey": "env:DECXPERT_VIEWER_API_KEY",
+      "storage": { "region": "ap-south-1" },
+      "sources": {
+        "CT": { "bucket": "decxpert-studies", "prefix": "CT/" },
+        "MRI": { "bucket": "decxpert-mri", "prefix": "MRI/" },
+        "XRAY": { "bucket": "decxpert-xray", "prefix": "Xray/" },
+        "MAMMOGRAPHY": { "bucket": "decxpert-mammography", "prefix": "Mammography/" }
+      },
+      "derived": { "bucket": "decxpert-studies", "prefix": "viewer-derived/" },
+      "frameAncestors": ["https://marengo.pacsdectrocel.online"]
+    },
+    {
+      "id": "radagent",
+      "apiKey": "env:RADAGENT_VIEWER_API_KEY",
+      "storage": {
+        "endpoint": "https://<cloudflare-account-id>.r2.cloudflarestorage.com",
+        "accessKeyId": "env:RADAGENT_R2_ACCESS_KEY_ID",
+        "secretAccessKey": "env:RADAGENT_R2_SECRET_ACCESS_KEY"
+      },
+      "sources": { "default": { "bucket": "radagent-scans", "prefix": "imaging/" } },
+      "derived": { "bucket": "radagent-scans", "prefix": "viewer-derived/" },
+      "frameAncestors": ["https://radagent.renewist.com", "https://staging.radagent.renewist.com"]
+    }
+  ]
+}

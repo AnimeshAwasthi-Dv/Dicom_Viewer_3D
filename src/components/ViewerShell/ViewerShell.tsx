@@ -24,19 +24,22 @@ export function ViewerShell(): JSX.Element {
   const exportOpen = useUiStore((state) => state.exportOpen);
   const series = useMemo(() => selectCurrentSeries(studies, selectedSeriesId), [studies, selectedSeriesId]);
   const hasStudy = studies.length > 0;
-  const seriesCount = useMemo(() => studies.reduce((count, study) => count + study.series.length, 0), [studies]);
-  // On phones a single-series study starts with the series strip folded away to leave room for the image.
+  // On phones the series panel is a drawer over the image, opened from the header.
+  const [drawerOpen, setDrawerOpen] = useState(false);
   useEffect(() => {
-    if (seriesCount === 1 && window.matchMedia('(max-width: 760px), (max-height: 500px)').matches) setSeriesCollapsed(true);
-  }, [seriesCount]);
+    const phone = window.matchMedia('(max-width: 760px)');
+    const close = (): void => { if (!phone.matches) setDrawerOpen(false); };
+    phone.addEventListener('change', close);
+    return () => phone.removeEventListener('change', close);
+  }, []);
   const remote = new URLSearchParams(window.location.search).has('session');
 
   return (
     <div className="viewer-shell">
-      <PatientHeader study={studies.find(study => study.id === series?.studyInstanceUID) ?? studies[0]} series={series} />
+      <PatientHeader study={studies.find(study => study.id === series?.studyInstanceUID) ?? studies[0]} series={series} seriesOpen={drawerOpen} onToggleSeries={() => setDrawerOpen((open) => !open)} />
       <Toolbar disabled={!hasStudy} />
       <div className={`workstation ${seriesCollapsed ? 'series-collapsed' : ''}`}>
-        <SeriesPanel studies={studies} selectedSeriesId={selectedSeriesId} collapsed={seriesCollapsed} onToggleCollapsed={() => setSeriesCollapsed((collapsed) => !collapsed)} />
+        <SeriesPanel studies={studies} selectedSeriesId={selectedSeriesId} collapsed={seriesCollapsed} drawerOpen={drawerOpen} onToggleCollapsed={() => setSeriesCollapsed((collapsed) => !collapsed)} onCloseDrawer={() => setDrawerOpen(false)} />
         <section className="viewport-stage">
           {!hasStudy ? (remote ? <div className="empty-state"><h1>Remote study session</h1><p>Your study will appear when the connection is ready.</p></div> : <LocalLoader />) : <ViewportGrid series={series} />}
           {loading && (

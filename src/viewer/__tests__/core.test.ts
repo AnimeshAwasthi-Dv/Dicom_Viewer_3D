@@ -55,6 +55,20 @@ describe('viewer core', () => {
     expect(sortSeriesInstances(instances).map((instance) => instance.id)).toEqual(['sop-1', 'sop-2', 'sop-3']);
   });
 
+  it('preserves acquisition order when diffusion volumes repeat slice positions', () => {
+    const instances = [
+      { instanceNumber: 1, z: 0 }, { instanceNumber: 2, z: 10 },
+      { instanceNumber: 21, z: 0 }, { instanceNumber: 22, z: 10 }
+    ].map(({ instanceNumber, z }) => ({
+      id: `sop-${instanceNumber}`,
+      fileName: 'dwi.dcm',
+      metadata: metadata({ sopInstanceUID: `sop-${instanceNumber}`, instanceNumber }),
+      sortPosition: z,
+      errors: []
+    }));
+    expect(sortSeriesInstances(instances).map((instance) => instance.id)).toEqual(['sop-1', 'sop-2', 'sop-21', 'sop-22']);
+  });
+
   it('extracts required metadata with defaults', () => {
     const elements = new Map<string, string | number | number[]>([
       ['00100010', 'DOE^JANE'],

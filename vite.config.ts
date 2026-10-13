@@ -26,7 +26,14 @@ export default defineConfig({
   optimizeDeps: {
     // Pre-bundling would break the loader's `new URL('./decodeImageFrameWorker.js', import.meta.url)` worker.
     exclude: ['@cornerstonejs/dicom-image-loader'],
-    include: ['dicom-parser']
+    // Its WebAssembly codecs are CommonJS, so they still need pre-bundling to be importable in development.
+    include: [
+      'dicom-parser',
+      '@cornerstonejs/dicom-image-loader > @cornerstonejs/codec-charls/decodewasmjs',
+      '@cornerstonejs/dicom-image-loader > @cornerstonejs/codec-libjpeg-turbo-8bit/decodewasmjs',
+      '@cornerstonejs/dicom-image-loader > @cornerstonejs/codec-openjpeg/decodewasmjs',
+      '@cornerstonejs/dicom-image-loader > @cornerstonejs/codec-openjph/wasmjs'
+    ]
   },
   test: {
     environment: 'jsdom',

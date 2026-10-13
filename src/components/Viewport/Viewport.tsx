@@ -6,7 +6,7 @@ import { useViewerStore } from '../../store/viewerStore';
 import { markFirstImage, markInteraction } from '../../viewer/cache/BackgroundWork';
 import type { ViewportState } from '../../viewer/core/Viewport';
 import { captureViewport, downloadBlob } from '../../viewer/cornerstone/capture';
-import { RENDERING_ENGINE_ID, renderingEngine } from '../../viewer/cornerstone/engine';
+import { RENDERING_ENGINE_ID, renderingEngine, watchViewportSize } from '../../viewer/cornerstone/engine';
 import { initCornerstone } from '../../viewer/cornerstone/init';
 import { applyPendingMeasurements } from '../../viewer/cornerstone/measurementSync';
 import { stackToolGroup } from '../../viewer/cornerstone/tools';
@@ -46,6 +46,9 @@ export const Viewport = memo(function Viewport({ viewport: state, series: series
   const [loading, setLoading] = useState(false);
   // True while this component is moving the viewport itself, so the events it causes aren't read back as user input.
   const applying = useRef(false);
+  // Cornerstone emits a VOI event while changing images. That is source
+  // presentation, not a radiologist choosing a shared window for the stack.
+  const presentedImageId = useRef<string | undefined>(undefined);
   const source = useStudyStore((store) => store.imageSource);
   const studies = useStudyStore((store) => store.studies);
   const selectedSeriesId = useStudyStore((store) => store.selectedSeriesId);
@@ -61,11 +64,13 @@ export const Viewport = memo(function Viewport({ viewport: state, series: series
     if (!element) return;
     let cancelled = false;
     let enabled = false;
+    let unwatchSize: (() => void) | undefined;
     void initCornerstone().then(() => {
       if (cancelled) return;
       const engine = renderingEngine();
       engine.enableElement({ viewportId: id, element, type: Enums.ViewportType.STACK, defaultOptions: { background: [0, 0, 0] } });
       stackToolGroup().addViewport(id, RENDERING_ENGINE_ID);
+      unwatchSize = watchViewportSize(element);
       enabled = true;
       configurePrefetch();
       setStack(engine.getViewport(id) as StackViewport);
@@ -74,6 +79,7 @@ export const Viewport = memo(function Viewport({ viewport: state, series: series
       cancelled = true;
       setStack(undefined);
       if (!enabled) return;
+      unwatchSize?.();
       toolUtilities.stackContextPrefetch.disable(element);
       stackToolGroup().removeViewports(RENDERING_ENGINE_ID, id);
       renderingEngine().disableElement(id);
@@ -109,7 +115,9 @@ export const Viewport = memo(function Viewport({ viewport: state, series: series
         applying.current = false;
       }
       setImageCount(ids.length);
-      setImageId(stack.getCurrentImageId());
+      const currentImageId = stack.getCurrentImageId();
+      presentedImageId.current = currentImageId;
+      setImageId(currentImageId);
       // Keep the store's window when the controller set one; otherwise report the image's own default.
       const shown = readWindow(stack);
       if (shown && !desired?.windowInitialized) useViewerStore.getState().setWindow(id, shown.width, shown.center, false);
@@ -165,12 +173,30 @@ export const Viewport = memo(function Viewport({ viewport: state, series: series
     };
     const onPresentation = () => {
       if (applying.current || frame) return;
+      if (stack.getCurrentImageId() !== presentedImageId.current) return;
       frame = requestAnimationFrame(publish);
     };
     const onNewImage = () => {
       const index = stack.getCurrentImageIdIndex();
-      setImageId(stack.getCurrentImageId());
+      const nextImageId = stack.getCurrentImageId();
+      presentedImageId.current = nextImageId;
+      setImageId(nextImageId);
       if (viewportStateOf(id)?.instanceIndex !== index) useViewerStore.getState().setInstanceIndex(id, index);
+      const current = viewportStateOf(id);
+      const metadata = source?.locate(nextImageId)?.instance.metadata;
+      // Until the user deliberately windows the viewport, honor each image's
+      // own DICOM VOI. This matters for one Series UID containing multiple DWI
+      // b-values/echoes whose stored ranges differ by an order of magnitude.
+      if (current && !current.windowInitialized && metadata?.windowWidth && metadata.windowCenter !== undefined) {
+        applying.current = true;
+        try {
+          applyWindow(stack, metadata.windowWidth, metadata.windowCenter);
+          useViewerStore.getState().setWindow(id, metadata.windowWidth, metadata.windowCenter, false);
+          stack.render();
+        } finally {
+          applying.current = false;
+        }
+      }
     };
     const onRendered = () => markFirstImage();
     const onCancel = () => cancelActiveManipulations(element);
@@ -190,7 +216,7 @@ export const Viewport = memo(function Viewport({ viewport: state, series: series
       element.removeEventListener(Enums.Events.IMAGE_RENDERED, onRendered);
       for (const name of ['wheel', 'pointerdown', 'touchstart'] as const) element.removeEventListener(name, interaction);
     };
-  }, [id, stack]);
+  }, [id, source, stack]);
 
   // Cine.
   useEffect(() => {

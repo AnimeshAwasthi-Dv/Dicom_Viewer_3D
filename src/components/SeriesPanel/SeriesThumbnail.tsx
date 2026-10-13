@@ -25,6 +25,9 @@ export function SeriesThumbnail({ series }: { series: Series }): JSX.Element {
       const imageId = ids[Math.floor(ids.length / 2)];
       if (!imageId || abort.signal.aborted) return;
       await csUtilities.loadImageToCanvas({ canvas, imageId, thumbnail: true, requestType: Enums.RequestType.Thumbnail });
+      // Cornerstone pins the canvas to 256 CSS pixels; the card sizes it instead, or only its corner shows.
+      canvas.style.removeProperty('width');
+      canvas.style.removeProperty('height');
     }, abort.signal).catch(() => {
       if (!abort.signal.aborted) setFailed(true);
     });
@@ -35,7 +38,7 @@ export function SeriesThumbnail({ series }: { series: Series }): JSX.Element {
 
   return (
     <div className="series-preview">
-      <canvas ref={canvasRef} width={128} height={96} />
+      <canvas ref={canvasRef} width={128} height={128} />
       {failed && <span className="series-preview-fallback">{series.modality}</span>}
       <span className="series-count">{imageCount(series)}</span>
     </div>

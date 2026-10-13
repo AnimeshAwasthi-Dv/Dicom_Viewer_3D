@@ -17,7 +17,7 @@ import { useUiStore } from '../../store/uiStore';
 import { useRemoteControlStore } from '../../store/remoteControlStore';
 import type { MprSettings } from '../../types/remote';
 import { deviceProfile } from '../../viewer/core/DeviceProfile';
-import { RENDERING_ENGINE_ID, renderingEngine } from '../../viewer/cornerstone/engine';
+import { RENDERING_ENGINE_ID, renderingEngine, watchViewportSize } from '../../viewer/cornerstone/engine';
 import { initCornerstone } from '../../viewer/cornerstone/init';
 import { MPR_TOOL_GROUP, VOLUME_3D_TOOL_GROUP } from '../../viewer/cornerstone/tools';
 import { toRange, toWindow } from '../../viewer/cornerstone/viewportSync';
@@ -182,6 +182,7 @@ export function MprViewer({ series: seriesProp }: { series?: Series }): JSX.Elem
   useEffect(() => {
     if (!source || !series) return;
     let cancelled = false;
+    let unwatchSizes: Array<() => void> = [];
     const volumeId = `cornerstoneStreamingImageVolume:${series.id}`;
     setReady(false);
     setError(undefined);
@@ -209,6 +210,7 @@ export function MprViewer({ series: seriesProp }: { series?: Series }): JSX.Elem
         { viewportId: VIEWPORT_ID.volume, element: elements.current.volume!, type: Enums.ViewportType.VOLUME_3D, defaultOptions: { background: [0.02, 0.04, 0.06] as Types.Point3 } }
       ];
       inputs.forEach((input) => engine.enableElement(input));
+      unwatchSizes = inputs.map((input) => watchViewportSize(input.element));
       const mprGroup = ToolGroupManager.getToolGroup(MPR_TOOL_GROUP)!;
       PLANES.forEach((plane) => mprGroup.addViewport(VIEWPORT_ID[plane.id], RENDERING_ENGINE_ID));
       ToolGroupManager.getToolGroup(VOLUME_3D_TOOL_GROUP)!.addViewport(VIEWPORT_ID.volume, RENDERING_ENGINE_ID);
@@ -222,6 +224,7 @@ export function MprViewer({ series: seriesProp }: { series?: Series }): JSX.Elem
     })().catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : 'The volume could not be built.'); });
     return () => {
       cancelled = true;
+      unwatchSizes.forEach((unwatch) => unwatch());
       eventTarget.removeEventListener(Enums.Events.IMAGE_VOLUME_MODIFIED, onProgress);
       ToolGroupManager.getToolGroup(MPR_TOOL_GROUP)?.removeViewports(RENDERING_ENGINE_ID);
       ToolGroupManager.getToolGroup(VOLUME_3D_TOOL_GROUP)?.removeViewports(RENDERING_ENGINE_ID);

@@ -17,6 +17,18 @@ export function instanceSortPosition(instance: Instance): number {
 }
 
 export function sortSeriesInstances(instances: Instance[]): Instance[] {
+  const byNumber = [...instances].sort((a, b) => (a.metadata.instanceNumber ?? 0) - (b.metadata.instanceNumber ?? 0));
+  // A SeriesInstanceUID is an acquisition container, not necessarily one
+  // scrollable anatomical stack. Diffusion, perfusion and multi-echo scanners
+  // commonly reuse every slice position for a second contrast/time point. If
+  // we sort such a series by geometry, the volumes become interleaved
+  // (slice 1 volume A, slice 1 volume B, slice 2 volume A, ...). Preserve the
+  // scanner's acquisition order until these groups become separate display
+  // sets, as clinical viewers do.
+  const positions = instances.map((instance) => instance.sortPosition);
+  const hasRepeatedPositions = new Set(positions.map((value) => value.toFixed(3))).size < positions.length;
+  if (hasRepeatedPositions) return byNumber;
+
   const sorted = [...instances].sort((a, b) => a.sortPosition - b.sortPosition || (a.metadata.instanceNumber ?? 0) - (b.metadata.instanceNumber ?? 0));
   const numbered = sorted.filter((instance) => instance.metadata.instanceNumber !== undefined);
   if (numbered.length >= 2) {

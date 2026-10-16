@@ -1,55 +1,53 @@
-import { Queue } from 'bullmq';
 import { EventEmitter } from 'node:events';
 import { createApp } from './app';
-import { readConfig, redisConnection } from './config';
+import { readConfig } from './config';
+import { openDatabase } from './database';
+import { createJobs } from './jobs';
 import { createSessions } from './sessions';
 import { createStorage } from './storage';
 import type { StudyManifest } from '../src/types/remote';
 
 const config = readConfig();
-const redis = redisConnection(config);
-const subscriber = redisConnection(config);
-await Promise.all([redis.connect(), subscriber.connect()]);
+const db = openDatabase(config.VIEWER_DATA_DIR);
+const jobs = createJobs(db);
 const notifications = new EventEmitter();
 notifications.setMaxListeners(0);
-subscriber.on('message', (_channel: string, id: string) => notifications.emit(id));
-await subscriber.subscribe('viewer:updates');
-const queueConnection = redisConnection(config);
-const queue = new Queue('viewer-import', { connection: queueConnection, prefix: '{viewer-import}' });
 const storage = createStorage(config);
 async function manifest(id: string): Promise<StudyManifest> {
-  const key = `viewer:manifest:${id}`;
-  const cached = await redis.get(key);
-  if (cached) return JSON.parse(cached) as StudyManifest;
+  const indexed = jobs.manifest(id);
+  if (indexed) return indexed;
   const loaded = await storage.manifest(id);
-  await redis.set(key, JSON.stringify(loaded), 'EX', 300);
+  jobs.saveManifest(loaded);
   return loaded;
 }
 const app = createApp({
-  config, sessions: createSessions(redis), sign: storage.sign, sourceVersion: storage.sourceVersion, manifest,
-  async enqueue(id, zipKey, modality) {
-    // A failed import keeps its job record under this ID; clear it so the import can run again.
-    const previous = await queue.getJob(id);
-    if (previous && await previous.isFailed()) await previous.remove();
-    await queue.add('import', { id, zipKey, modality }, { jobId: id, attempts: 3, backoff: { type: 'exponential', delay: 5000 } });
+  config, sessions: createSessions(db), sign: storage.sign, sourceVersion: storage.sourceVersion, listSource: storage.listSource, manifest,
+  async enqueue(id, objects, modality) {
+    jobs.enqueue({ id, objects, modality });
   },
   async job(id) {
-    const job = await queue.getJob(id);
-    if (job) return { status: await job.getState(), progress: job.progress };
-    // Job records can be trimmed from Redis; the extracted study in S3 is what counts.
+    const job = jobs.get(id);
+    if (job) return job;
+    // A prior deployment may have indexed this study already; recover its manifest from S3.
     try { await manifest(id); return { status: 'completed', progress: 100 }; }
     catch { return undefined; }
   },
-  async publish(id) { await redis.publish('viewer:updates', id); },
+  async publish(id) { notifications.emit(id); },
   subscribe(id, notify) { notifications.on(id, notify); return () => { notifications.off(id, notify); }; },
-  healthy: () => redis.status === 'ready' && subscriber.status === 'ready'
+  healthy: () => { try { db.prepare('SELECT 1').get(); return true; } catch { return false; } }
 });
+const prune = () => db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
+prune();
+const cleanup = setInterval(() => { try { prune(); } catch { console.error('Expired session cleanup failed'); } }, 60000);
+cleanup.unref();
 const server = app.listen(config.PORT, config.HOST, () => console.log(`Viewer API listening on ${config.HOST}:${config.PORT}`));
 async function shutdown() {
-  server.close();
+  clearInterval(cleanup);
+  const closed = new Promise<void>(resolve => server.close(() => resolve()));
   server.closeAllConnections();
-  await Promise.all([queue.close(), subscriber.quit(), redis.quit()]);
-  await queueConnection.quit();
+  await closed;
+  storage.client.destroy();
+  db.close();
 }
 process.once('SIGTERM', () => void shutdown());
 process.once('SIGINT', () => void shutdown());

@@ -27,10 +27,11 @@ uniform float u_windowWidth;
 uniform float u_windowCenter;
 uniform float u_invert;
 uniform float u_monochromeOne;
+uniform float u_color;
 in vec2 v_texCoord;
 out vec4 outColor;
 
-float sampleBilinear(vec2 uv) {
+vec4 sampleBilinear(vec2 uv) {
   vec2 size = vec2(textureSize(u_image, 0));
   vec2 pixel = uv * size - 0.5;
   vec2 base = floor(pixel);
@@ -39,17 +40,24 @@ float sampleBilinear(vec2 uv) {
   ivec2 p10 = ivec2(clamp(base + vec2(1.0, 0.0), vec2(0.0), size - 1.0));
   ivec2 p01 = ivec2(clamp(base + vec2(0.0, 1.0), vec2(0.0), size - 1.0));
   ivec2 p11 = ivec2(clamp(base + vec2(1.0, 1.0), vec2(0.0), size - 1.0));
-  float v00 = texelFetch(u_image, p00, 0).r;
-  float v10 = texelFetch(u_image, p10, 0).r;
-  float v01 = texelFetch(u_image, p01, 0).r;
-  float v11 = texelFetch(u_image, p11, 0).r;
+  vec4 v00 = texelFetch(u_image, p00, 0);
+  vec4 v10 = texelFetch(u_image, p10, 0);
+  vec4 v01 = texelFetch(u_image, p01, 0);
+  vec4 v11 = texelFetch(u_image, p11, 0);
   return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
 }
 
 void main() {
-  float value = sampleBilinear(v_texCoord);
+  vec4 sampleValue = sampleBilinear(v_texCoord);
   float low = u_windowCenter - 0.5 - (u_windowWidth - 1.0) / 2.0;
   float high = u_windowCenter - 0.5 + (u_windowWidth - 1.0) / 2.0;
+  if (u_color > 0.5) {
+    vec3 color = clamp((sampleValue.rgb * 255.0 - low) / max(1.0, high - low), 0.0, 1.0);
+    if (u_invert > 0.5) color = 1.0 - color;
+    outColor = vec4(color, 1.0);
+    return;
+  }
+  float value = sampleValue.r;
   float gray = clamp((value - low) / max(1.0, high - low), 0.0, 1.0);
   if (u_monochromeOne > 0.5) gray = 1.0 - gray;
   if (u_invert > 0.5) gray = 1.0 - gray;
@@ -145,6 +153,7 @@ export class WebGLRenderer implements RenderingEngine {
     gl.uniform1f(this.uniform('u_windowCenter'), options.windowCenter);
     gl.uniform1f(this.uniform('u_invert'), options.camera.inverted ? 1 : 0);
     gl.uniform1f(this.uniform('u_monochromeOne'), frame.metadata.photometricInterpretation === 'MONOCHROME1' ? 1 : 0);
+    gl.uniform1f(this.uniform('u_color'), frame.rgbaPixels ? 1 : 0);
     gl.uniform2f(this.uniform('u_flip'), options.camera.flipH ? 1 : 0, options.camera.flipV ? 1 : 0);
     // Placement is worked out in CSS pixels, like the overlay, then converted to device pixels.
     const place = imagePlacement(options.camera, this.width / this.dpr, this.height / this.dpr, frame.metadata.columns, frame.metadata.rows);
@@ -176,6 +185,10 @@ export class WebGLRenderer implements RenderingEngine {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, frame.metadata.columns, frame.metadata.rows, 0, gl.RED, gl.FLOAT, frame.modalityPixels);
+    if (frame.rgbaPixels) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, frame.metadata.columns, frame.metadata.rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame.rgbaPixels);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, frame.metadata.columns, frame.metadata.rows, 0, gl.RED, gl.FLOAT, frame.modalityPixels);
+    }
   }
 }

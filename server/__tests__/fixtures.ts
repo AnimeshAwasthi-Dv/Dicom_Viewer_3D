@@ -13,7 +13,7 @@ export const manifest: StudyManifest = {
 };
 export const config: Config = {
   HOST: '127.0.0.1', PORT: 3000, PUBLIC_URL: 'https://viewer.example.com', SERVICE_API_KEY: 'test-only-service-secret-with-32-characters',
-  REDIS_URL: 'redis://localhost:6379', REDIS_CLUSTER_MODE: false, AWS_REGION: 'ap-south-1', S3_BUCKET: 'test-bucket',
+  VIEWER_DATA_DIR: 'test-data/server', AWS_REGION: 'us-east-1', S3_BUCKET: 'test-bucket',
   S3_SOURCE_PREFIX: 'studies/', S3_DERIVED_PREFIX: 'derived/', SESSION_TTL_SECONDS: 3600,
   MAX_ZIP_BYTES: 100000, MAX_ENTRY_BYTES: 100000, MAX_EXPANDED_BYTES: 200000, MAX_ZIP_ENTRIES: 10
 };

@@ -8,3 +8,7 @@ server-dist
 *.log
 test-data
 coverage
+data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

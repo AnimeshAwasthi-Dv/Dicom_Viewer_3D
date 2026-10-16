@@ -22,13 +22,16 @@ export function LocalLoader(): JSX.Element {
       const parsed = await new DicomLoader().loadFiles(files, setLoading);
       const source = new LocalFileImageSource(parsed);
       const studies = await source.getStudyMetadata();
-      setSource(source, studies);
       const primary = choosePrimarySeries(studies);
-      if (primary) {
-        useStudyStore.getState().selectSeries(primary.id);
-        assignSeries('viewport-1', primary.id);
+      if (!primary) {
+        source.dispose();
+        setLoading(undefined);
+        addError('No loadable DICOM, JPEG, or PNG images were found in that selection.');
+        return;
       }
-      else addError('No loadable DICOM images were found in that selection.');
+      setSource(source, studies);
+      useStudyStore.getState().selectSeries(primary.id);
+      assignSeries('viewport-1', primary.id);
     } catch (error) {
       addError(error instanceof Error ? error.message : 'Unable to load selected files.');
       setLoading(undefined);
@@ -50,14 +53,14 @@ export function LocalLoader(): JSX.Element {
       }}
     >
       <div className="empty-mark">DECXPERT VIEWER</div>
-      <h1>Drop a DICOM study or ZIP here</h1>
+      <h1>Drop DICOM, JPEG, PNG, or ZIP files here</h1>
       <p>Local mode · Files remain on this device</p>
       <div className="loader-actions">
-        <button onClick={() => inputRef.current?.click()}><Upload size={16} /> Open DICOM / ZIP</button>
+        <button onClick={() => inputRef.current?.click()}><Upload size={16} /> Open Images / ZIP</button>
         <button className="secondary" onClick={() => folderRef.current?.click()}>Open Folder</button>
       </div>
-      <span className="support">Supports CT · MR · CR · DX</span>
-      <input ref={inputRef} hidden type="file" multiple accept=".dcm,.dicom,.zip,application/dicom,application/zip" onChange={(event) => event.target.files && void load(event.target.files)} />
+      <span className="support">Supports DICOM (CT · MR · CR · DX) · JPG · JPEG · PNG</span>
+      <input ref={inputRef} hidden type="file" multiple accept=".dcm,.dicom,.jpg,.jpeg,.png,.zip,application/dicom,image/jpeg,image/png,application/zip" onChange={(event) => event.target.files && void load(event.target.files)} />
       <input ref={folderRef} hidden type="file" multiple webkitdirectory="" onChange={(event) => event.target.files && void load(event.target.files)} />
     </div>
   );

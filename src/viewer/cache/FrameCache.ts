@@ -14,7 +14,7 @@ export class FrameCache {
   }
 
   setDecoded(id: string, frame: DecodedFrame): void {
-    this.decoded.set(id, frame, frame.modalityPixels.byteLength + (frame.storedPixels?.byteLength ?? 0));
+    this.decoded.set(id, frame, frame.modalityPixels.byteLength + (frame.storedPixels?.byteLength ?? 0) + (frame.rgbaPixels?.byteLength ?? 0));
   }
 
   metrics(): { framesCached: number; memoryBytes: number } {

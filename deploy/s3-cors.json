@@ -1,6 +1,6 @@
 [
   {
-    "AllowedOrigins": ["https://viewer.example.com"],
+    "AllowedOrigins": ["https://dicom.admindectrocel.online"],
     "AllowedMethods": ["GET", "HEAD"],
     "AllowedHeaders": ["*"],
     "ExposeHeaders": ["ETag", "Content-Length"],

@@ -1,38 +1,49 @@
-import { Worker } from 'bullmq';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { Readable, Transform } from 'node:stream';
-import { readConfig, redisConnection, sourceLocation, type Modality } from './config';
+import { setTimeout as delay } from 'node:timers/promises';
+import { readConfig } from './config';
 import { createStorage } from './storage';
-import { importZip } from './importer';
+import { importS3Study } from './sourceImporter';
+import { openDatabase } from './database';
+import { createJobs, JOB_LEASE_MS, type ClaimedJob } from './jobs';
 
 const config = readConfig();
 const storage = createStorage(config);
-const connection = redisConnection(config, true);
-const worker = new Worker('viewer-import', async job => {
-  const { id, zipKey, modality } = job.data as { id: string; zipKey: string; modality?: Modality };
-  const location = sourceLocation(config, modality);
-  if (!zipKey.startsWith(location.prefix)) throw new Error('Source outside allowed prefix');
-  const result = await storage.client.send(new GetObjectCommand({ Bucket: location.bucket, Key: zipKey }));
-  if (!(result.Body instanceof Readable)) throw new Error('Archive body is not a stream');
-  if ((result.ContentLength ?? 0) > config.MAX_ZIP_BYTES) { result.Body.destroy(); throw new Error('ZIP exceeds configured size limit'); }
-  let bytes = 0;
-  const limit = new Transform({ transform(chunk: Buffer, _encoding, callback) {
-    bytes += chunk.length;
-    callback(bytes > config.MAX_ZIP_BYTES ? new Error('ZIP exceeds configured size limit') : null, chunk);
-  } });
-  const body = result.Body;
-  body.on('error', error => limit.destroy(error));
+const db = openDatabase(config.VIEWER_DATA_DIR);
+const jobs = createJobs(db);
+let stopping = false;
+process.once('SIGTERM', () => { stopping = true; });
+process.once('SIGINT', () => { stopping = true; });
+
+async function run(claim: ClaimedJob): Promise<void> {
+  let leaseLost = false;
+  const renewal = setInterval(() => {
+    try { if (!jobs.renew(claim)) leaseLost = true; } catch { leaseLost = true; }
+  }, JOB_LEASE_MS / 3);
+  const assertOwner = () => {
+    if (leaseLost || !jobs.owns(claim)) throw new Error('Import job lease lost');
+  };
   try {
-    const manifest = await importZip(body.pipe(limit), id, config.S3_DERIVED_PREFIX, {
-      maxEntries: config.MAX_ZIP_ENTRIES, maxEntryBytes: config.MAX_ENTRY_BYTES, maxExpandedBytes: config.MAX_EXPANDED_BYTES
-    }, storage.put, value => job.updateProgress(value));
-    await storage.put(`${config.S3_DERIVED_PREFIX}${id}/manifest.json`, JSON.stringify(manifest), 'application/json');
-    return { instances: manifest.instances.length, skippedFiles: manifest.skippedFiles };
-  } finally { body.destroy(); }
-}, { connection, prefix: '{viewer-import}', concurrency: 1 });
-worker.on('failed', (job, error) => console.error(`Import ${job?.id ?? 'unknown'} failed: ${error.name}`));
-worker.on('error', error => console.error(`Import worker error: ${error.name}`));
-console.log('ZIP import worker ready');
-async function shutdown() { await worker.close(); await connection.quit(); }
-process.once('SIGTERM', () => void shutdown());
-process.once('SIGINT', () => void shutdown());
+    await importS3Study(config, storage.client, claim.payload, async (...args) => {
+      assertOwner();
+      await storage.put(...args);
+    }, async value => { assertOwner(); jobs.progress(claim, value); });
+    jobs.complete(claim, await storage.manifest(claim.payload.id));
+  } catch (error) {
+    const errorType = error instanceof Error ? error.name : 'UnknownError';
+    jobs.fail(claim, errorType);
+    console.error(`Import ${claim.payload.id} attempt ${claim.attempts} failed: ${errorType}`);
+  } finally { clearInterval(renewal); }
+}
+
+console.log('Study import worker ready');
+try {
+  while (!stopping) {
+    try {
+      const claim = jobs.claim();
+      if (claim) await run(claim);
+      else await delay(1000);
+    } catch (error) {
+      console.error(`Import worker error: ${error instanceof Error ? error.name : 'UnknownError'}`);
+      await delay(1000);
+    }
+  }
+} finally { storage.client.destroy(); db.close(); }

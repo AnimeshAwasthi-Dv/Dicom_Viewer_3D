@@ -36,6 +36,11 @@ function renderThumbnail(canvas: HTMLCanvasElement, frame: DecodedFrame): void {
       if (x < offsetX || x >= offsetX + drawnWidth || y < offsetY || y >= offsetY + drawnHeight) continue;
       const sourceX = Math.min(frame.metadata.columns - 1, Math.max(0, Math.floor(((x - offsetX) / drawnWidth) * frame.metadata.columns)));
       const sourceY = Math.min(frame.metadata.rows - 1, Math.max(0, Math.floor(((y - offsetY) / drawnHeight) * frame.metadata.rows)));
+      if (frame.rgbaPixels) {
+        const sourceIndex = (sourceY * frame.metadata.columns + sourceX) * 4;
+        imageData.data.set(frame.rgbaPixels.subarray(sourceIndex, sourceIndex + 4), outputIndex);
+        continue;
+      }
       const value = frame.modalityPixels[sourceY * frame.metadata.columns + sourceX];
       let gray = Math.round(Math.min(1, Math.max(0, (value - low) / Math.max(1, high - low))) * 255);
       if (frame.metadata.photometricInterpretation === 'MONOCHROME1') gray = 255 - gray;

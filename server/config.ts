@@ -1,13 +1,11 @@
 import { z } from 'zod';
-import { Redis, Cluster } from 'ioredis';
 
 const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().default('127.0.0.1'),
   PUBLIC_URL: z.url(),
   SERVICE_API_KEY: z.string().min(32),
-  REDIS_URL: z.string().regex(/^rediss?:\/\//),
-  REDIS_CLUSTER_MODE: z.enum(['true', 'false']).default('false').transform(v => v === 'true'),
+  VIEWER_DATA_DIR: z.string().min(1).default('data'),
   AWS_REGION: z.string().min(1),
   S3_BUCKET: z.string().min(3),
   S3_CT_STUDIES_BUCKET: z.string().optional(),
@@ -19,6 +17,7 @@ const schema = z.object({
   S3_MAMMOGRAPHY_STUDIES_BUCKET: z.string().optional(),
   S3_MAMMOGRAPHY_STUDIES_PREFIX: z.string().optional(),
   S3_SOURCE_PREFIX: z.string().min(1).refine(v => v.endsWith('/'), 'Must end in /'),
+  S3_ADDITIONAL_SOURCE_PREFIXES: z.string().optional(),
   S3_DERIVED_PREFIX: z.string().default('viewer-derived/').refine(v => v.endsWith('/'), 'Must end in /'),
   SESSION_TTL_SECONDS: z.coerce.number().int().min(60).max(86400).default(3600),
   MAX_ZIP_BYTES: z.coerce.number().int().positive().default(8 * 1024 ** 3),
@@ -33,36 +32,28 @@ export function readConfig(): Config {
   if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('PUBLIC_URL must use HTTPS outside localhost');
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('PUBLIC_URL must be an origin without credentials, path, query or fragment');
   if (config.SERVICE_API_KEY.startsWith('replace-')) throw new Error('Generate a new SERVICE_API_KEY before starting');
-  if (config.S3_SOURCE_PREFIX.startsWith(config.S3_DERIVED_PREFIX) || config.S3_DERIVED_PREFIX.startsWith(config.S3_SOURCE_PREFIX)) throw new Error('S3 source and derived prefixes must not overlap');
+  for (const modality of [undefined, 'CT', 'MRI', 'XRAY', 'MAMMOGRAPHY'] as const) {
+    const location = sourceLocation(config, modality);
+    for (const prefix of location.prefixes) {
+      if (!prefix.endsWith('/') || prefix.startsWith('/') || prefix.includes('..') || prefix.includes('\\')) throw new Error('S3 source prefixes must be relative paths ending in /');
+      if (location.bucket === config.S3_BUCKET && (prefix.startsWith(config.S3_DERIVED_PREFIX) || config.S3_DERIVED_PREFIX.startsWith(prefix))) throw new Error('S3 source and derived prefixes must not overlap');
+    }
+  }
   return config;
 }
 
-export function redisConnection(config: Config, blocking = false): Redis | Cluster {
-  const parsed = new URL(config.REDIS_URL);
-  const options = {
-    host: parsed.hostname, port: Number(parsed.port || 6379),
-    username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
-    password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
-    db: Number(parsed.pathname.slice(1) || 0),
-    ...(parsed.protocol === 'rediss:' ? { tls: { servername: parsed.hostname } } : {}),
-    maxRetriesPerRequest: blocking ? null : 1,
-    lazyConnect: true,
-    connectTimeout: 10000
-  };
-  const client = config.REDIS_CLUSTER_MODE
-    ? new Cluster([{ host: options.host, port: options.port }], {
-      lazyConnect: true, redisOptions: options,
-      dnsLookup: (address, callback) => callback(null, address)
-    })
-    : new Redis(options);
-  client.on('error', () => console.error('Redis connection error'));
-  return client;
+export type Modality = 'CT' | 'MRI' | 'XRAY' | 'MAMMOGRAPHY';
+export function sourceLocation(config: Config, modality?: Modality): { bucket: string; prefix: string; prefixes: string[] } {
+  const overrideBucket = modality ? config[`S3_${modality}_STUDIES_BUCKET`] : undefined;
+  const overridePrefix = modality ? config[`S3_${modality}_STUDIES_PREFIX`] : undefined;
+  if (Boolean(overrideBucket) !== Boolean(overridePrefix)) throw new Error('Configure both modality bucket and prefix');
+  const bucket = overrideBucket || config.S3_BUCKET;
+  const prefix = `${(overridePrefix || config.S3_SOURCE_PREFIX).replace(/\/+$/, '')}/`;
+  const additional = overridePrefix ? [] : (config.S3_ADDITIONAL_SOURCE_PREFIXES ?? '').split(',').map(value => value.trim()).filter(Boolean);
+  return { bucket, prefix, prefixes: [prefix, ...additional] };
 }
 
-export type Modality = 'CT' | 'MRI' | 'XRAY' | 'MAMMOGRAPHY';
-export function sourceLocation(config: Config, modality?: Modality): { bucket: string; prefix: string } {
-  const bucket = modality ? config[`S3_${modality}_STUDIES_BUCKET`] : config.S3_BUCKET;
-  const prefix = modality ? config[`S3_${modality}_STUDIES_PREFIX`] : config.S3_SOURCE_PREFIX;
-  if (!bucket || !prefix) throw new Error('Modality storage has not been configured');
-  return { bucket, prefix: `${prefix.replace(/\/+$/, '')}/` };
+export function allowedSourceKey(key: string, prefixes: string[]): boolean {
+  return !key.includes('\\') && !key.split('/').some(part => part === '.' || part === '..') &&
+    prefixes.some(prefix => key.startsWith(prefix) && key.length > prefix.length);
 }

@@ -1,6 +1,6 @@
-// Run on the portal server: API_BASE=https://viewer.example.com SERVICE_API_KEY=... ZIP_KEY=CT/example.zip node examples/control-viewer.mjs
-const { API_BASE, SERVICE_API_KEY, ZIP_KEY, MODALITY = 'CT' } = process.env;
-if (!API_BASE || !SERVICE_API_KEY || !ZIP_KEY) throw new Error('Set API_BASE, SERVICE_API_KEY and ZIP_KEY');
+// Run on the portal server. Set SERVICE_API_KEY and exactly one of ZIP_KEY, SOURCE_PREFIX, OBJECT_KEYS_JSON.
+const { API_BASE = 'https://dicom.admindectrocel.online', SERVICE_API_KEY, ZIP_KEY, SOURCE_PREFIX, OBJECT_KEYS_JSON, MODALITY } = process.env;
+if (!SERVICE_API_KEY || [ZIP_KEY, SOURCE_PREFIX, OBJECT_KEYS_JSON].filter(Boolean).length !== 1) throw new Error('Set SERVICE_API_KEY and exactly one of ZIP_KEY, SOURCE_PREFIX, OBJECT_KEYS_JSON');
 async function request(path, method = 'GET', data) {
   const response = await fetch(new URL(path, API_BASE), {
     method,
@@ -10,7 +10,8 @@ async function request(path, method = 'GET', data) {
   if (!response.ok) throw new Error(`Viewer API returned ${response.status}: ${await response.text()}`);
   return response.json();
 }
-const imported = await request('/api/v1/studies', 'POST', { modality: MODALITY, zipKey: ZIP_KEY });
+const source = ZIP_KEY ? { zipKey: ZIP_KEY } : SOURCE_PREFIX ? { sourcePrefix: SOURCE_PREFIX } : { objectKeys: JSON.parse(OBJECT_KEYS_JSON) };
+const imported = await request('/api/v1/studies', 'POST', { ...source, ...(MODALITY ? { modality: MODALITY } : {}) });
 const deadline = Date.now() + 60 * 60 * 1000;
 while (true) {
   const study = await request(`/api/v1/studies/${imported.id}`);
@@ -22,8 +23,4 @@ while (true) {
 const session = await request('/api/v1/sessions', 'POST', { studyId: imported.id });
 console.log('Study ID (save this for reuse):', imported.id);
 console.log('Viewer link (private):', session.viewerUrl);
-const state = session.state;
-state.viewports[0].windowWidth = 1500;
-state.viewports[0].windowCenter = -600;
-await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: session.revision, state });
-console.log('Requested lung window. Open the link, then GET the session to inspect lastClientStatus.');
+console.log('Open the link, then GET the session to inspect lastClientStatus.');

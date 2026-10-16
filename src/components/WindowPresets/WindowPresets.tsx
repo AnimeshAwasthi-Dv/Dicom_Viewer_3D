@@ -35,6 +35,7 @@ const presetsByModality: Record<string, Array<{ name: string; ww: number; wl: nu
 
 function presetsFor(modality?: string): Array<{ name: string; ww: number; wl: number }> {
   const normalized = modality?.toUpperCase();
+  if (normalized === 'JPEG' || normalized === 'PNG') return [{ name: 'Original', ww: 256, wl: 128 }];
   if (normalized && presetsByModality[normalized]) return presetsByModality[normalized];
   if (normalized === 'CR' || normalized === 'DX' || normalized === 'MG' || normalized === 'XA' || normalized === 'RF' || normalized === 'SC') return presetsByModality.DEFAULT;
   return presetsByModality.DEFAULT;

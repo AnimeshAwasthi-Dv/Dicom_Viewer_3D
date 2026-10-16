@@ -3,16 +3,51 @@ import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import { gunzipSync } from 'node:zlib';
-import { encodeForStorage, importZip } from '../importer';
+import { encodeForStorage, importSources, importZip } from '../importer';
 import { dicomFile } from './fixtures';
 
 const limits = { maxEntries: 20, maxEntryBytes: 10000, maxExpandedBytes: 20000 };
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
 async function archive(files: Record<string, Buffer | string>) {
   const zip = new JSZip();
   for (const [key, data] of Object.entries(files)) zip.file(key, data);
   return Readable.from([await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })]);
 }
 describe('ZIP import', () => {
+  it('imports mixed ZIP and direct images while preserving the original PNG bytes', async () => {
+    const saved: Array<{ key: string; bytes: Uint8Array; type: string }> = [];
+    const result = await importSources([
+      { name: 'scan.zip', stream: await archive({ 'scan.dcm': dicomFile(), 'nested/image.PNG': png }) },
+      { name: 'direct.png', stream: Readable.from([png]) },
+      { name: 'broken.png', stream: Readable.from([png.subarray(0, 8)]) },
+      { name: 'note.txt', stream: Readable.from(['not an image']) }
+    ], 'mixed', 'derived/', limits, async (key, bytes, type) => { saved.push({ key, bytes, type }); }, async () => undefined);
+    expect(result.instances).toHaveLength(3);
+    expect(result.skippedFiles).toBe(2);
+    const images = result.instances.filter(instance => instance.metadata.imageFormat);
+    expect(images.map(instance => instance.metadata)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ imageFormat: 'png', rows: 1, columns: 1, fileName: 'image.PNG' }),
+      expect.objectContaining({ imageFormat: 'png', rows: 1, columns: 1, fileName: 'direct.png' })
+    ]));
+    expect(new Set(images.map(instance => instance.metadata.sopInstanceUID)).size).toBe(2);
+    expect(images.every(instance => !instance.previewKey && !instance.metadata.pixelSpacing)).toBe(true);
+    for (const stored of saved.filter(object => object.type === 'image/png')) expect(Buffer.from(stored.bytes)).toEqual(png);
+  });
+
+  it('enforces aggregate limits across multiple source files and ZIPs', async () => {
+    await expect(importSources([
+      { name: 'a.png', stream: Readable.from([png]) }, { name: 'b.zip', stream: await archive({ 'b.png': png }) }
+    ], 'id', 'derived/', { ...limits, maxExpandedBytes: png.length * 2 - 1 }, async () => undefined, async () => undefined)).rejects.toThrow('size limits');
+    await expect(importZip(await archive({ 'a.png': png }), 'id', 'derived/', { ...limits, maxZipBytes: 20 }, async () => undefined, async () => undefined)).rejects.toThrow('ZIP exceeds');
+  });
+
+  it('propagates stream failures and rejects duplicates across direct files and ZIPs', async () => {
+    const broken = new Readable({ read() { this.destroy(new Error('download interrupted')); } });
+    await expect(importZip(broken, 'id', 'derived/', limits, async () => undefined, async () => undefined)).rejects.toThrow('download interrupted');
+    await expect(importSources([
+      { name: 'a.dcm', stream: Readable.from([dicomFile()]) }, { name: 'b.zip', stream: await archive({ 'a.dcm': dicomFile() }) }
+    ], 'id', 'derived/', limits, async () => undefined, async () => undefined)).rejects.toThrow('Duplicate');
+  });
   it('indexes actual DICOM files, ignores non-images and never uses archive paths as destination keys', async () => {
     const write = vi.fn(async () => undefined);
     const result = await importZip(await archive({ '../../escape.dcm': dicomFile(), 'folder/2.dcm': dicomFile('1.2.3.4.2'), 'readme.txt': 'not dicom' }), 'study-id', 'derived/', limits, write, async () => undefined);

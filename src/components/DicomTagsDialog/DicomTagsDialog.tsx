@@ -78,7 +78,7 @@ export function DicomTagsDialog(): JSX.Element | null {
                   <code>{tag.value || '--'}</code>
                 </div>
               ))}
-              {tags.length === 0 && <p className="muted">No readable metadata tags found for this instance</p>}
+              {tags.length === 0 && <p className="muted">{metadata.imageFormat ? 'JPEG and PNG images do not contain DICOM tags.' : 'No readable metadata tags found for this instance'}</p>}
               {tags.length > 0 && filteredTags.length === 0 && <p className="muted">No tags match that search</p>}
             </>
           ) : <p className="muted">No instance selected</p>}

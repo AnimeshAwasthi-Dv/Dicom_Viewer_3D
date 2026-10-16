@@ -2,21 +2,26 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ReadModalityArchives",
+      "Sid": "ReadPortalStudies",
       "Effect": "Allow",
       "Action": ["s3:GetObject"],
       "Resource": [
-        "arn:aws:s3:::decxpert-studies/CT/*",
-        "arn:aws:s3:::decxpert-mri/MRI/*",
-        "arn:aws:s3:::decxpert-xray/Xray/*",
-        "arn:aws:s3:::decxpert-mammography/Mammography/*"
+        "arn:aws:s3:::animesh-arn/test/hospitals/*",
+        "arn:aws:s3:::animesh-arn/test/studies/*"
       ]
+    },
+    {
+      "Sid": "ListStudyFolders",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::animesh-arn"],
+      "Condition": { "StringLike": { "s3:prefix": ["test/hospitals/*", "test/studies/*"] } }
     },
     {
       "Sid": "ReadWriteDerivedViewerData",
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": ["arn:aws:s3:::decxpert-studies/viewer-derived/*"]
+      "Resource": ["arn:aws:s3:::animesh-arn/test/viewer-derived/*"]
     }
   ]
 }

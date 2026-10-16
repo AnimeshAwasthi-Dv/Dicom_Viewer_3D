@@ -9,4 +9,8 @@ test-data/
 .env.*
 !.env.example
 server-dist/
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.zip

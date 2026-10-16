@@ -1,13 +1,13 @@
 # DecXpert Viewer
 
-A local-first, web-based DICOM viewer foundation branded as DecXpert Viewer, built with React, TypeScript, Vite, Zustand, Web Workers, and a WebGL2 grayscale renderer.
+A local-first, web-based DICOM and image viewer branded as DecXpert Viewer, built with React, TypeScript, Vite, Zustand, Web Workers, and a WebGL2 renderer.
 
-The repository also includes an EC2-ready API and ZIP import worker for private S3 studies, Redis-backed viewer sessions, and live remote control from another service. See the [EC2 deployment and API guide](docs/ec2-viewer-service.md), [.env.example](.env.example), and [portal integration example](examples/control-viewer.mjs). Local file viewing continues to work without the backend.
+The repository also includes an EC2-ready API and import worker for private S3 studies, persistent SQLite sessions and import jobs, and live remote control from another service. No Redis service is required. The supplied deployment configuration uses `https://dicom.admindectrocel.online` and bucket `animesh-arn` in `us-east-1`, reading `test/hospitals/` and `test/studies/`. See the [EC2 deployment and API guide](docs/ec2-viewer-service.md), [.env.example](.env.example), and [portal integration example](examples/control-viewer.mjs). Local file viewing continues to work without the backend.
 
 ## Requirements
 
 - Windows 10/11
-- Node.js 22 or newer
+- Node.js 24 or newer (server persistence uses Node's built-in SQLite module)
 - A modern Chromium, Edge, or Firefox browser with WebGL2 support
 
 ## Run Locally
@@ -54,6 +54,14 @@ npm run build
 - Cine playback with configurable FPS in code/state
 
 ## Transfer Syntaxes
+
+### JPEG and PNG images
+
+Local mode also opens `.jpg`, `.jpeg`, and `.png` images through the file picker, drag/drop, folders, and ZIP archives (including mixed DICOM/image archives). Each ordinary image appears as a separate series named after its file. Original colors are preserved in the viewport and thumbnails; PNG transparency is displayed over black, and JPEG EXIF orientation is applied by the browser.
+
+Pan, zoom, rotation, flip, inversion, window/level, and annotations work on these images. Length and area measurements use pixels because ordinary images have no DICOM calibration; probes and ROI statistics report luminance. They do not provide patient orientation, DICOM tags, or a 3D volume. The server-side S3 importer also supports these images, individually or inside mixed ZIP archives; the API accepts explicit object keys or a study-folder prefix. Raster images are limited to 64 megapixels.
+
+### DICOM encodings
 
 Currently enabled:
 

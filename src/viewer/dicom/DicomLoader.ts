@@ -15,6 +15,7 @@ export class DicomLoader {
     const batchSize = 48;
     const worker = new Worker(new URL('../workers/dicomWorker.ts', import.meta.url), { type: 'module' });
     const parsed: ParsedDicomFile[] = [];
+    const rasterStudyId = crypto.randomUUID();
 
     try {
       for (let start = 0; start < loadFiles.length; start += batchSize) {
@@ -23,7 +24,7 @@ export class DicomLoader {
           name: file.name,
           buffer: await file.arrayBuffer()
         })));
-        const request: DicomWorkerRequest = { id: crypto.randomUUID(), files: batch };
+        const request: DicomWorkerRequest = { id: crypto.randomUUID(), files: batch, rasterStudyId };
         const response = await new Promise<DicomWorkerResponse>((resolve, reject) => {
           worker.onerror = () => reject(new Error('DICOM worker failed.'));
           worker.onmessage = (event: MessageEvent<DicomWorkerResponse>) => resolve(event.data);

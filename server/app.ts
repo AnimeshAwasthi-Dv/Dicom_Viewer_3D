@@ -5,7 +5,8 @@ import { z, ZodError } from 'zod';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Config } from './config';
-import { sourceLocation, type Modality } from './config';
+import { allowedSourceKey, sourceLocation, type Modality } from './config';
+import type { SourceObject } from './sources';
 import { digest, matchesSecret, snapshot, type Sessions, type SessionRecord } from './sessions';
 import { remoteStateSchema, type StudyManifest } from '../src/types/remote';
 import { initialState, validateState } from './validation';
@@ -17,7 +18,8 @@ export interface ApiDependencies {
   sign(key: string): Promise<string>;
   /** The source object's version (ETag, plus VersionId when versioning is on), or undefined when it doesn't exist. */
   sourceVersion(bucket: string, key: string): Promise<string | undefined>;
-  enqueue(id: string, zipKey: string, modality?: Modality): Promise<void>;
+  listSource(bucket: string, prefix: string, maxEntries: number): Promise<string[]>;
+  enqueue(id: string, objects: SourceObject[], modality?: Modality): Promise<void>;
   job(id: string): Promise<{ status: string; progress: unknown } | undefined>;
   publish(id: string): Promise<void>;
   subscribe(id: string, notify: () => void): () => void;
@@ -32,12 +34,11 @@ const bearer = (header?: string) => header?.startsWith('Bearer ') ? header.slice
 // Change this only when the representation of derived frames changes. It makes
 // existing source archives import into a new, isolated derived prefix instead
 // of reusing an incompatible (or less efficient) prior representation.
-const DERIVED_FRAME_FORMAT_VERSION = 'gzip-v1';
+const DERIVED_FRAME_FORMAT_VERSION = 'images-v2';
 
 /**
- * The import ID for one version of one source ZIP. Asking to import the same archive again returns the study already
- * extracted from it instead of unpacking it again; replacing the ZIP (a new ETag), or changing the
- * derived-frame format, gives a new ID and a fresh import.
+ * The import ID for one version of a source selection. Repeated selections reuse indexed images;
+ * replacing a source object or changing the derived-frame format gives a new ID and a fresh import.
  */
 export function studyIdFor(bucket: string, key: string, version: string): string {
   const hex = createHash('sha256').update(`${DERIVED_FRAME_FORMAT_VERSION}\n${bucket}\n${key}\n${version}`).digest('hex');
@@ -81,13 +82,33 @@ export function createApp(deps: ApiDependencies) {
   };
 
   app.post('/api/v1/studies', service, async (req, res) => {
-    const { zipKey, modality } = z.object({ zipKey: z.string().min(1).max(1024), modality: z.enum(['CT', 'MRI', 'XRAY', 'MAMMOGRAPHY']).optional() }).strict().parse(req.body);
+    const keySchema = z.string().min(1).max(1024);
+    const { zipKey, objectKeys, sourcePrefix, modality } = z.object({
+      zipKey: keySchema.optional(),
+      objectKeys: z.array(keySchema).min(1).max(config.MAX_ZIP_ENTRIES).optional(),
+      sourcePrefix: keySchema.optional(),
+      modality: z.enum(['CT', 'MRI', 'XRAY', 'MAMMOGRAPHY']).optional()
+    }).strict().refine(input => [input.zipKey, input.objectKeys, input.sourcePrefix].filter(value => value !== undefined).length === 1, 'Supply exactly one of zipKey, objectKeys, or sourcePrefix').parse(req.body);
     let location;
     try { location = sourceLocation(config, modality); } catch { throw new HttpError(400, 'Modality storage has not been configured'); }
-    if (!zipKey.startsWith(location.prefix) || !zipKey.toLowerCase().endsWith('.zip')) throw new HttpError(400, 'ZIP key must be within the configured modality prefix and end in .zip');
-    const version = await deps.sourceVersion(location.bucket, zipKey);
-    if (!version) throw new HttpError(404, 'ZIP not found');
-    const id = studyIdFor(location.bucket, zipKey, version);
+    if (zipKey && !zipKey.toLowerCase().endsWith('.zip')) throw new HttpError(400, 'zipKey must end in .zip');
+    if (sourcePrefix && (!sourcePrefix.endsWith('/') || !allowedSourceKey(sourcePrefix, location.prefixes))) throw new HttpError(400, 'sourcePrefix must be a study subfolder inside an allowed source prefix, ending in /');
+    const keys = [...new Set(sourcePrefix ? await deps.listSource(location.bucket, sourcePrefix, config.MAX_ZIP_ENTRIES) : objectKeys ?? [zipKey!])].sort();
+    if (!keys.length) throw new HttpError(404, 'No source files found');
+    if (keys.length > config.MAX_ZIP_ENTRIES) throw new HttpError(400, 'Too many source files');
+    if (keys.some(key => !allowedSourceKey(key, location.prefixes) || key.endsWith('/'))) throw new HttpError(400, 'Source keys must be files inside an allowed source prefix');
+    const objects: SourceObject[] = [];
+    // Limit concurrent HEADs while capturing the exact object versions for this import.
+    for (let start = 0; start < keys.length; start += 16) {
+      objects.push(...await Promise.all(keys.slice(start, start + 16).map(async key => {
+        const version = await deps.sourceVersion(location.bucket, key);
+        if (!version) throw new HttpError(404, 'Source file not found or inaccessible');
+        return { key, version };
+      })));
+    }
+    const id = objects.length === 1
+      ? studyIdFor(location.bucket, objects[0].key, objects[0].version)
+      : studyIdFor(location.bucket, JSON.stringify(keys), JSON.stringify(objects.map(object => object.version)));
     const statusUrl = `/api/v1/studies/${id}`;
     const existing = await deps.job(id);
     // Already imported or importing: reuse it. Only a failed import runs again.
@@ -95,7 +116,7 @@ export function createApp(deps: ApiDependencies) {
       res.status(200).json({ id, status: existing.status, reused: true, statusUrl });
       return;
     }
-    await deps.enqueue(id, zipKey, modality);
+    await deps.enqueue(id, objects, modality);
     res.status(202).json({ id, status: 'queued', reused: false, statusUrl });
   });
   app.get('/api/v1/studies/:id', service, async (req, res) => {

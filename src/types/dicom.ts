@@ -4,6 +4,8 @@ export type TransferSyntaxUID =
   | string;
 
 export interface DicomMetadata {
+  /** Present for ordinary images; these have no DICOM patient geometry or calibration. */
+  imageFormat?: 'jpeg' | 'png';
   fileName: string;
   patientName?: string;
   patientId?: string;
@@ -60,6 +62,8 @@ export interface ParsedDicomFile {
 
 export interface DecodedFrame {
   metadata: DicomMetadata;
+  /** Original display colors, composited over black, for ordinary JPEG/PNG images. */
+  rgbaPixels?: Uint8Array;
   // Decoders fill this, but frames decoded in the worker pool drop it: nothing reads it and it would double the cache size.
   storedPixels?: Int16Array | Uint16Array | Uint8Array | Int8Array;
   modalityPixels: Float32Array;

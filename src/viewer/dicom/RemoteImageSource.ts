@@ -29,6 +29,7 @@ export class RemoteImageSource implements ImageSource {
   private readonly urls = new Map<string, SignedUrls>();
   /** Manifest metadata of instances that have a preview, keyed by instance. */
   private readonly previews = new Map<string, PublicManifest['instances'][number]['metadata']>();
+  private readonly images = new Map<string, PublicManifest['instances'][number]['metadata']>();
   private readonly signing = new Map<string, Promise<void>>();
   private readonly studies: Study[];
   /** Series and position of each instance, for choosing which URLs to sign together. */
@@ -41,6 +42,7 @@ export class RemoteImageSource implements ImageSource {
       ids.forEach((id, index) => this.positions.set(id, { ids, index }));
     }));
     manifest.instances.forEach(({ metadata, preview }) => { if (preview) this.previews.set(metadata.sopInstanceUID, metadata); });
+    manifest.instances.forEach(({ metadata }) => { if (metadata.imageFormat) this.images.set(metadata.sopInstanceUID, metadata); });
     this.queue = new FrameRequestQueue((id, signal) => this.load(id, signal), this.network.limits());
     this.network.onChange(() => this.queue.setLimits(this.network.limits()));
     // Start decoders and their codec while the first image downloads, instead of after it arrives.
@@ -128,7 +130,8 @@ export class RemoteImageSource implements ImageSource {
     } finally { measured({ bytes: 0 }); }
     combined.throwIfAborted();
     // Parsing, decoding and rescaling happen in the worker pool; the main thread only uploads the result.
-    const frame = await this.decoder.decodeFile(buffer, id);
+    const image = this.images.get(id);
+    const frame = image ? await this.decoder.decodePixels(image, buffer) : await this.decoder.decodeFile(buffer, id);
     this.cache.setDecoded(id, frame);
     return frame;
   }

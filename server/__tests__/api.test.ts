@@ -9,16 +9,19 @@ import { digest } from '../sessions';
 import { config, manifest, studyId } from './fixtures';
 import { remoteStateSchema } from '../../src/types/remote';
 import { initialState, validateState } from '../validation';
+import type { Config } from '../config';
+import type { SourceObject } from '../sources';
 
 const servers: Server[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); })));
 });
-async function harness() {
+async function harness(overrides: Partial<Config> = {}) {
   // Fake import queue and source bucket: object versions by key, job states by study ID.
   const versions = new Map<string, string>([['studies/a.zip', '"etag-1"']]);
   const jobs = new Map<string, string>([[studyId, 'completed']]);
   const enqueued: string[] = [];
+  const selections: SourceObject[][] = [];
   const records = new Map<string, SessionRecord>();
   const events = new EventEmitter();
   const statuses = new Map<string, string>();
@@ -41,9 +44,10 @@ async function harness() {
     async status(id, value) { if (value) statuses.set(id, value); return statuses.get(id) ?? null; }
   };
   const app = createApp({
-    config, sessions, manifest: async () => manifest, sign: async key => `https://s3.example.com/${key}`,
+    config: { ...config, ...overrides }, sessions, manifest: async () => manifest, sign: async key => `https://s3.example.com/${key}`,
     sourceVersion: async (_bucket, key) => versions.get(key),
-    enqueue: async id => { enqueued.push(id); jobs.set(id, 'waiting'); },
+    listSource: async (_bucket, prefix) => [...versions.keys()].filter(key => key.startsWith(prefix)),
+    enqueue: async (id, objects) => { enqueued.push(id); selections.push(objects); jobs.set(id, 'waiting'); },
     job: async id => jobs.has(id) ? { status: jobs.get(id)!, progress: 0 } : undefined,
     publish: async id => { events.emit(id); },
     subscribe: (id, notify) => { events.on(id, notify); return () => { events.off(id, notify); }; }, healthy: () => true
@@ -63,9 +67,64 @@ async function harness() {
     const token = new URLSearchParams(new URL(session.viewerUrl).hash.slice(1)).get('token')!;
     return { ...session, token };
   };
-  return { request, create, versions, jobs, enqueued };
+  return { request, create, versions, jobs, enqueued, selections };
 }
 describe('viewer API', () => {
+  it('imports mixed source selections, deduplicates keys and reuses the selection regardless of key order', async () => {
+    const { request, versions, selections } = await harness();
+    versions.set('studies/image.JPG', 'jpeg-v1');
+    versions.set('studies/slice', 'dicom-v1');
+    const first = await request('/api/v1/studies', 'POST', { objectKeys: ['studies/a.zip', 'studies/image.JPG', 'studies/slice'] });
+    expect(first.status).toBe(202);
+    const imported = await first.json();
+    const again = await request('/api/v1/studies', 'POST', { objectKeys: ['studies/slice', 'studies/a.zip', 'studies/image.JPG', 'studies/a.zip'] });
+    expect(await again.json()).toMatchObject({ id: imported.id, reused: true });
+    expect(selections).toHaveLength(1);
+    expect(selections[0]).toEqual([
+      { key: 'studies/a.zip', version: '"etag-1"' },
+      { key: 'studies/image.JPG', version: 'jpeg-v1' },
+      { key: 'studies/slice', version: 'dicom-v1' }
+    ]);
+    versions.set('studies/image.JPG', 'jpeg-v2');
+    expect((await (await request('/api/v1/studies', 'POST', { objectKeys: selections[0].map(object => object.key) })).json()).id).not.toBe(imported.id);
+  });
+
+  it('snapshots one study folder and gives additions a new import ID', async () => {
+    const { request, versions, selections } = await harness();
+    versions.set('studies/case/1.dcm', 'v1');
+    versions.set('studies/case/2.png', 'v2');
+    versions.set('studies/case-other/unrelated.png', 'v3');
+    const response = await request('/api/v1/studies', 'POST', { sourcePrefix: 'studies/case/' });
+    expect(response.status).toBe(202);
+    const first = await response.json();
+    expect(selections[0].map(object => object.key)).toEqual(['studies/case/1.dcm', 'studies/case/2.png']);
+    versions.set('studies/case/3.jpeg', 'v3');
+    expect((await (await request('/api/v1/studies', 'POST', { sourcePrefix: 'studies/case/' })).json()).id).not.toBe(first.id);
+    expect((await request('/api/v1/studies', 'POST', { sourcePrefix: 'studies/empty/' })).status).toBe(404);
+  });
+
+  it('rejects ambiguous inputs, broad folder imports, traversal and files outside the allowed sources', async () => {
+    const { request, enqueued } = await harness();
+    for (const body of [
+      {}, { zipKey: 'studies/a.zip', objectKeys: ['studies/a.zip'] }, { objectKeys: [] },
+      { sourcePrefix: 'studies/' }, { sourcePrefix: 'studies/case' }, { sourcePrefix: 'other/case/' },
+      { objectKeys: ['studies/a.zip', 'reports/a.png'] }, { objectKeys: ['studies/../reports/a.png'] },
+      { objectKeys: ['studies/a/'] }, { objectKeys: ['studies/..\\reports/a.png'] }
+    ]) expect((await request('/api/v1/studies', 'POST', body)).status).toBe(400);
+    expect(enqueued).toEqual([]);
+  });
+
+  it('uses the supplied domain and shared portal prefixes for all modalities', async () => {
+    const { request, create, versions } = await harness({
+      PUBLIC_URL: 'https://dicom.admindectrocel.online', S3_BUCKET: 'animesh-arn',
+      S3_SOURCE_PREFIX: 'test/hospitals/', S3_ADDITIONAL_SOURCE_PREFIXES: 'test/studies/', S3_DERIVED_PREFIX: 'test/viewer-derived/'
+    });
+    versions.set('test/hospitals/hospital/study/image.png', 'v1');
+    versions.set('test/studies/study/archive.zip', 'v2');
+    expect((await request('/api/v1/studies', 'POST', { modality: 'MRI', objectKeys: ['test/hospitals/hospital/study/image.png', 'test/studies/study/archive.zip'] })).status).toBe(202);
+    expect((await request('/api/v1/studies', 'POST', { objectKeys: ['test/reports/report.png'] })).status).toBe(400);
+    expect(new URL((await create()).viewerUrl).origin).toBe('https://dicom.admindectrocel.online');
+  });
   it('uses a new import ID when the derived-frame format changes', () => {
     const bucket = 'test-bucket';
     const key = 'studies/a.zip';

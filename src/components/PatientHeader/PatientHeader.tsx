@@ -15,6 +15,17 @@ function ageSexLabel(study?: Study): string {
 
 export function PatientHeader({ study, series }: { study?: Study; series?: Series }): JSX.Element {
   const description = study?.studyDescription ?? study?.bodyPartExamined ?? series?.description ?? 'Description unavailable';
+  const image = series?.instances[0]?.metadata;
+  if (image?.imageFormat) {
+    return (
+      <header className="patient-header">
+        <div className="brand-block"><strong>DecXpert Viewer</strong><span>Image viewer</span></div>
+        <div className="patient-block"><strong>{image.fileName}</strong><span>{image.columns} × {image.rows} pixels</span></div>
+        <div className="study-block"><span>Measurements in pixels</span><span>{description}</span></div>
+        <div className="modality-block"><strong>{image.imageFormat.toUpperCase()}</strong></div>
+      </header>
+    );
+  }
   return (
     <header className="patient-header">
       <div className="brand-block">

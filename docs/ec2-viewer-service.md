@@ -54,6 +54,8 @@ Back up the persistent directory with both processes stopped, or use a SQLite-aw
 
 ## API workflow from the portal EC2
 
+For a simpler entry point, `POST /api/v1/viewer-links` accepts the same source selection as study import and returns either HTTP 202 with import status or HTTP 201 with a ready viewer URL. See the [portal integration guide](portal-integration.md), including a reusable backend client and a Docker smoke test. The explicit import/status/session APIs below remain supported.
+
 All `/api/v1/*` endpoints require `Authorization: Bearer <SERVICE_API_KEY>`. The portal is responsible for checking its user's identity and study entitlement before creating a viewer link. The browser receives a separate expiring session token that cannot call controller endpoints.
 
 ### 1. Import a study

@@ -12,6 +12,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server-dist ./server-dist
+COPY integrations/portal/viewer-client.mjs ./integrations/portal/viewer-client.mjs
+COPY examples ./examples
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 EXPOSE 3000

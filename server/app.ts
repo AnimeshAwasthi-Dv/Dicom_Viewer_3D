@@ -81,14 +81,14 @@ export function createApp(deps: ApiDependencies) {
     return deps.manifest(id);
   };
 
-  app.post('/api/v1/studies', service, async (req, res) => {
+  const prepareStudy = async (body: unknown) => {
     const keySchema = z.string().min(1).max(1024);
     const { zipKey, objectKeys, sourcePrefix, modality } = z.object({
       zipKey: keySchema.optional(),
       objectKeys: z.array(keySchema).min(1).max(config.MAX_ZIP_ENTRIES).optional(),
       sourcePrefix: keySchema.optional(),
       modality: z.enum(['CT', 'MRI', 'XRAY', 'MAMMOGRAPHY']).optional()
-    }).strict().refine(input => [input.zipKey, input.objectKeys, input.sourcePrefix].filter(value => value !== undefined).length === 1, 'Supply exactly one of zipKey, objectKeys, or sourcePrefix').parse(req.body);
+    }).strict().refine(input => [input.zipKey, input.objectKeys, input.sourcePrefix].filter(value => value !== undefined).length === 1, 'Supply exactly one of zipKey, objectKeys, or sourcePrefix').parse(body);
     let location;
     try { location = sourceLocation(config, modality); } catch { throw new HttpError(400, 'Modality storage has not been configured'); }
     if (zipKey && !zipKey.toLowerCase().endsWith('.zip')) throw new HttpError(400, 'zipKey must end in .zip');
@@ -113,11 +113,35 @@ export function createApp(deps: ApiDependencies) {
     const existing = await deps.job(id);
     // Already imported or importing: reuse it. Only a failed import runs again.
     if (existing && existing.status !== 'failed') {
-      res.status(200).json({ id, status: existing.status, reused: true, statusUrl });
-      return;
+      return { id, status: existing.status, reused: true, statusUrl };
     }
     await deps.enqueue(id, objects, modality);
-    res.status(202).json({ id, status: 'queued', reused: false, statusUrl });
+    return { id, status: 'queued', reused: false, statusUrl };
+  };
+  const createViewerSession = async (studyId: string) => {
+    const manifest = await readyManifest(studyId);
+    const { session, token } = await sessions.create(studyId, initialState(manifest), config.SESSION_TTL_SECONDS);
+    const url = new URL(config.PUBLIC_URL);
+    url.searchParams.set('session', session.id);
+    url.hash = `token=${token}`;
+    return { ...snapshot(session), viewerUrl: url.toString() };
+  };
+
+  app.post('/api/v1/studies', service, async (req, res) => {
+    const study = await prepareStudy(req.body);
+    res.status(study.reused ? 200 : 202).json(study);
+  });
+  // Portal convenience API: queue an S3 selection or return a ready-to-open session.
+  // Pending imports remain asynchronous so a large ZIP cannot hold an HTTP request open.
+  app.post('/api/v1/viewer-links', service, async (req, res) => {
+    const study = await prepareStudy(req.body);
+    if (study.status !== 'completed') {
+      res.setHeader('Retry-After', '2');
+      res.status(202).json({ studyId: study.id, status: study.status, statusUrl: study.statusUrl, reused: study.reused, retryAfterSeconds: 2 });
+      return;
+    }
+    const session = await createViewerSession(study.id);
+    res.status(201).json({ ...session, status: 'ready', reused: true });
   });
   app.get('/api/v1/studies/:id', service, async (req, res) => {
     const id = idSchema.parse(req.params.id);
@@ -128,12 +152,7 @@ export function createApp(deps: ApiDependencies) {
   });
   app.post('/api/v1/sessions', service, async (req, res) => {
     const { studyId } = z.object({ studyId: idSchema }).strict().parse(req.body);
-    const manifest = await readyManifest(studyId);
-    const { session, token } = await sessions.create(studyId, initialState(manifest), config.SESSION_TTL_SECONDS);
-    const url = new URL(config.PUBLIC_URL);
-    url.searchParams.set('session', session.id);
-    url.hash = `token=${token}`;
-    res.status(201).json({ ...snapshot(session), viewerUrl: url.toString() });
+    res.status(201).json(await createViewerSession(studyId));
   });
   app.get('/api/v1/sessions/:id', service, async (req, res) => {
     const session = await getSession(req.params.id);

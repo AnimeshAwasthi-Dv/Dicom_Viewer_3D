@@ -70,6 +70,52 @@ async function harness(overrides: Partial<Config> = {}) {
   return { request, create, versions, jobs, enqueued, selections };
 }
 describe('viewer API', () => {
+  it('queues a viewer link then creates usable, independent sessions for the completed selection', async () => {
+    const { request, versions, jobs, enqueued } = await harness();
+    versions.set('studies/case/photo.png', 'png-v1');
+    const source = { sourcePrefix: 'studies/case/' };
+    const pending = await request('/api/v1/viewer-links', 'POST', source);
+    expect(pending.status).toBe(202);
+    expect(pending.headers.get('Retry-After')).toBe('2');
+    expect(pending.headers.get('Cache-Control')).toBe('no-store');
+    const queued = await pending.json();
+    expect(queued).toMatchObject({ status: 'queued', reused: false, retryAfterSeconds: 2 });
+    expect(queued.viewerUrl).toBeUndefined();
+    expect((await (await request(queued.statusUrl)).json()).status).toBe('waiting');
+    expect((await request('/api/v1/viewer-links', 'POST', source)).status).toBe(202);
+    expect(enqueued).toEqual([queued.studyId]);
+
+    jobs.set(queued.studyId, 'completed');
+    const ready = await request('/api/v1/viewer-links', 'POST', source);
+    expect(ready.status).toBe(201);
+    const session = await ready.json();
+    expect(session).toMatchObject({ status: 'ready', studyId: queued.studyId, reused: true });
+    const token = new URLSearchParams(new URL(session.viewerUrl).hash.slice(1)).get('token')!;
+    expect((await request(`/api/viewer/${session.id}/manifest`, 'GET', undefined, token)).status).toBe(200);
+    const second = await (await request('/api/v1/viewer-links', 'POST', source)).json();
+    expect(second.id).not.toBe(session.id);
+    expect(enqueued).toHaveLength(1);
+    expect((await request(`/api/v1/sessions/${session.id}`, 'DELETE')).status).toBe(204);
+    expect((await request(`/api/viewer/${session.id}/manifest`, 'GET', undefined, token)).status).toBe(401);
+  });
+
+  it('protects viewer-link creation and shares import validation and failed-job retry', async () => {
+    const { request, jobs, enqueued } = await harness();
+    const source = { zipKey: 'studies/a.zip' };
+    expect((await request('/api/v1/viewer-links', 'POST', source, 'invalid')).status).toBe(401);
+    expect((await request('/api/v1/viewer-links', 'POST', { sourcePrefix: 'studies/' })).status).toBe(400);
+    expect((await request('/api/v1/viewer-links', 'POST', { objectKeys: ['reports/a.png'] })).status).toBe(400);
+    expect((await request('/api/v1/viewer-links', 'POST', { ...source, objectKeys: ['studies/a.zip'] })).status).toBe(400);
+    expect((await request('/api/v1/viewer-links', 'POST', { zipKey: 'studies/missing.zip' })).status).toBe(404);
+    expect(enqueued).toHaveLength(0);
+    const queued = await (await request('/api/v1/viewer-links', 'POST', source)).json();
+    jobs.set(queued.studyId, 'failed');
+    const retry = await request('/api/v1/viewer-links', 'POST', source);
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ studyId: queued.studyId, status: 'queued', reused: false });
+    expect(enqueued).toEqual([queued.studyId, queued.studyId]);
+  });
+
   it('imports mixed source selections, deduplicates keys and reuses the selection regardless of key order', async () => {
     const { request, versions, selections } = await harness();
     versions.set('studies/image.JPG', 'jpeg-v1');

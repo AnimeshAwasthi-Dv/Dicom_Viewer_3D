@@ -31,7 +31,7 @@ Replace `HOSPITAL/STUDY` with the actual S3 path. The folder is listed recursive
 
 Use object keys, not `s3://` or signed URLs. Allowed roots are `test/hospitals/` and `test/studies/`. Folder requests must name a study subfolder, not an entire root. Optional `modality` accepts `CT`, `MRI`, `XRAY` or `MAMMOGRAPHY`.
 
-For a new or ongoing import the API responds **202 Accepted**, with `Retry-After: 2`:
+Before the first image is uploaded the API responds **202 Accepted**, with `Retry-After: 2`:
 
 ```json
 {
@@ -43,7 +43,7 @@ For a new or ongoing import the API responds **202 Accepted**, with `Retry-After
 }
 ```
 
-Poll `GET /api/v1/studies/<study-id>` every two seconds with the same authorization header. Continue while status is `waiting`, `queued`, `active` or `delayed`. Stop and show an import error for `failed`; do not retry failed imports in an unbounded loop. If `completed`, call:
+Poll `GET /api/v1/studies/<study-id>` every two seconds with the same authorization header. **As soon as `ready: true` is returned, create a session; do not wait for `status: "completed"`.** `availableInstances` reports how many images are uploaded. Stop and show an import error for `failed`; do not retry failed imports in an unbounded loop. Once ready, call:
 
 ```http
 POST /api/v1/sessions
@@ -53,7 +53,11 @@ Content-Type: application/json
 {"studyId":"<study-id>"}
 ```
 
-This returns **201 Created** with `viewerUrl`, `id` (session ID), `studyId`, `expiresAt` (Unix milliseconds), `revision` and `state`. If the study was already indexed, the initial `POST /api/v1/viewer-links` returns those fields immediately, plus `status: "ready"` and `reused: true`.
+This returns **201 Created** with `viewerUrl`, `id` (session ID), `studyId`, `expiresAt` (Unix milliseconds), `revision`, `state`, `importStatus` and `availableInstances`. If any images are already available, the initial `POST /api/v1/viewer-links` returns these fields immediately, plus `status: "ready"` and `reused: true`. `importStatus: "loading"` means the link is viewable but the study is still incomplete; `"completed"` means importing has finished.
+
+The viewer shows the first available images and receives updates every two seconds. Additional metadata arrives in chunks; image pixels download on demand. It preserves the viewed image, window settings, camera and annotations as slices are added. Routine loading counters and progress messages are hidden; a small static "Partial study" label remains until completion. Import failures and skipped files remain visible. MPR is unavailable until importing finishes. Already downloaded frames remain cached. This does not promise that a large study will finish in a few seconds: source size, ZIP ordering, network speed and worker load still determine completion time.
+
+The worker publishes the first uploaded image, then up to every 20 additional images or after one second of processing at an image boundary. Only uploaded images/previews are advertised. Retries retain the available chunk; a terminal failure marks existing sessions incomplete and prevents new sessions. The final S3 manifest is published only after the full import succeeds.
 
 Open the full `viewerUrl`, preserving its `#token=...` fragment. It is an expiring bearer link; do not put it into public logs. Default session lifetime is one hour. Each ready link request creates a separate session; imports of unchanged source objects are reused. The portal can save the imported study ID and create later sessions directly with `/api/v1/sessions`. Re-submit the source selection to detect changed source objects. Explicitly submitting a failed selection again queues a retry.
 
@@ -64,7 +68,7 @@ An import with skipped files exposes `manifest.skippedFiles` through its study s
 | 400 | Fix the source selection or request body. |
 | 401 | Verify the portal key matches the viewer's `SERVICE_API_KEY`. |
 | 404 | Check the object keys, folder contents and viewer S3 permissions. |
-| 409 | A requested study is not yet ready for session creation. |
+| 409 | No images are available yet, the import failed, or an MPR request requires a completed study. |
 | 503 | Check viewer API/worker logs and S3 connectivity; retry with a bounded delay. |
 
 ## Optional Node.js client
@@ -84,7 +88,7 @@ const result = await viewer.requestViewerLink({
 // result.status === 'ready': return result.viewerUrl to the authorized browser.
 // Otherwise save result.studyId against the portal study and poll through the backend:
 // await viewer.getStudy(result.studyId)
-// Once completed: await viewer.createSession(result.studyId)
+// As soon as getStudy returns ready: true: await viewer.createSession(result.studyId)
 ```
 
 The client also provides `openStudy(source)` for CLI/background jobs. It handles import, polling and session creation, with a one-hour overall deadline. Do not hold a portal HTTP request open for an hour: use the separate methods and show progress in the portal. Pass `{ signal }` to cancel local waiting; this does not cancel the server import. HTTP errors expose `error.status`; import/overall-timeout errors expose `error.studyId` when available. `revokeSession(sessionId)` revokes a viewer session.

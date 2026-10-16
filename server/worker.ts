@@ -25,7 +25,9 @@ async function run(claim: ClaimedJob): Promise<void> {
     await importS3Study(config, storage.client, claim.payload, async (...args) => {
       assertOwner();
       await storage.put(...args);
-    }, async value => { assertOwner(); jobs.progress(claim, value); });
+    }, async value => { assertOwner(); jobs.progress(claim, value); }, async manifest => {
+      assertOwner(); jobs.publishChunk(claim, manifest);
+    });
     jobs.complete(claim, await storage.manifest(claim.payload.id));
   } catch (error) {
     const errorType = error instanceof Error ? error.name : 'UnknownError';

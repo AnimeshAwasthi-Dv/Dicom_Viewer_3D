@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { gunzipSync } from 'node:zlib';
 import { encodeForStorage, importSources, importZip } from '../importer';
 import { dicomFile } from './fixtures';
+import type { StudyManifest } from '../../src/types/remote';
 
 const limits = { maxEntries: 20, maxEntryBytes: 10000, maxExpandedBytes: 20000 };
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
@@ -14,6 +15,33 @@ async function archive(files: Record<string, Buffer | string>) {
   return Readable.from([await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })]);
 }
 describe('ZIP import', () => {
+  it('publishes a usable first image before reading the next source and retains immutable chunks', async () => {
+    const chunks: StudyManifest[] = [];
+    const saved = new Set<string>();
+    async function* sources() {
+      yield { name: 'first.dcm', stream: Readable.from([dicomFile('1.2.3.4.1')]) };
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].instances).toHaveLength(1);
+      yield { name: 'rest.zip', stream: await archive({ 'second.dcm': dicomFile('1.2.3.4.2'), 'third.png': png }) };
+    }
+    const result = await importSources(sources(), 'progressive', 'derived/', limits,
+      async key => { await new Promise(resolve => setTimeout(resolve, 2)); saved.add(key); }, async () => undefined,
+      async chunk => {
+        expect(chunk.instances.every(instance => saved.has(instance.key) && (!instance.previewKey || saved.has(instance.previewKey)))).toBe(true);
+        chunks.push(chunk);
+      });
+    expect(chunks.map(chunk => chunk.instances.length)).toEqual([1, 3]);
+    expect(chunks.every(chunk => chunk.importStatus === 'loading')).toBe(true);
+    expect(result.instances).toHaveLength(3);
+    expect(result.importStatus).toBeUndefined();
+  });
+
+  it('never publishes a failed upload as an available image', async () => {
+    const publish = vi.fn(async () => undefined);
+    await expect(importSources([{ name: 'first.png', stream: Readable.from([png]) }], 'failed', 'derived/', limits,
+      async () => { throw new Error('Upload failed'); }, async () => undefined, publish)).rejects.toThrow('Upload failed');
+    expect(publish).not.toHaveBeenCalled();
+  });
   it('imports mixed ZIP and direct images while preserving the original PNG bytes', async () => {
     const saved: Array<{ key: string; bytes: Uint8Array; type: string }> = [];
     const result = await importSources([

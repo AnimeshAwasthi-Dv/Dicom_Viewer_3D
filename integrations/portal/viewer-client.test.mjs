@@ -58,6 +58,17 @@ it('stops on a failed import without creating a session or retrying the import',
   expect(calls).toHaveLength(2);
 });
 
+it('opens a progressive session as soon as the first chunk is ready', async () => {
+  const { client, calls } = await harness((_req, res, count) => {
+    if (count === 1) reply(res, 202, { studyId: 'study-1', status: 'queued' });
+    else if (count === 2) reply(res, 200, { status: 'active', ready: true, availableInstances: 1 });
+    else reply(res, 201, { id: 'session-1', importStatus: 'loading', viewerUrl: 'https://viewer.example.com/#token=synthetic' });
+  });
+  expect(await client.openStudy({ zipKey: 'test/studies/a.zip' })).toMatchObject({ studyId: 'study-1', importStatus: 'loading' });
+  expect(calls).toHaveLength(3);
+  expect(calls[2].path).toBe('/api/v1/sessions');
+});
+
 it('reports HTTP status without copying potentially sensitive response bodies', async () => {
   const { client } = await harness((_req, res) => reply(res, 401, { error: 'private-response-body' }));
   await expect(client.requestViewerLink({ zipKey: 'test/studies/case.zip' })).rejects.toMatchObject({ status: 401, message: 'Viewer API returned HTTP 401' });

@@ -12,7 +12,8 @@ export function ViewportGrid({ series }: { series?: Series }): JSX.Element {
   const viewports = useViewerStore((state) => state.viewports);
   const mprOpen = useUiStore((state) => state.mprOpen);
   const studies = useStudyStore((state) => state.studies);
-  if (mprOpen) return <Suspense fallback={<div className="viewport-empty">Loading MPR tools…</div>}><MprViewer series={series} /></Suspense>;
+  const importStatus = useStudyStore((state) => state.remoteImportStatus);
+  if (mprOpen && (!importStatus || importStatus === 'completed')) return <Suspense fallback={<div className="viewport-empty">Loading MPR tools…</div>}><MprViewer series={series} /></Suspense>;
   return (
     <div className={`viewport-grid layout-${layout}`}>
       {viewports.map((viewport) => (

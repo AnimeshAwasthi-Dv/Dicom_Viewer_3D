@@ -31,11 +31,20 @@ export class RemoteImageSource implements ImageSource {
   private readonly previews = new Map<string, PublicManifest['instances'][number]['metadata']>();
   private readonly images = new Map<string, PublicManifest['instances'][number]['metadata']>();
   private readonly signing = new Map<string, Promise<void>>();
-  private readonly studies: Study[];
+  private studies: Study[] = [];
   /** Series and position of each instance, for choosing which URLs to sign together. */
   private readonly positions = new Map<string, { ids: string[]; index: number }>();
 
   constructor(private readonly client: RemoteClient, private readonly manifest: PublicManifest) {
+    this.updateManifest(manifest);
+    this.queue = new FrameRequestQueue((id, signal) => this.load(id, signal), this.network.limits());
+    this.network.onChange(() => this.queue.setLimits(this.network.limits()));
+  }
+
+  /** Extend metadata in place: decoded frames, signed URLs and ongoing downloads survive new chunks. */
+  updateManifest(manifest: PublicManifest): Study[] {
+    if (manifest.id !== this.manifest.id) throw new Error('Cannot replace a remote source with another study');
+    this.positions.clear();
     this.studies = buildStudies(manifest.instances.map(({ metadata }) => ({ metadata })), true);
     this.studies.forEach(study => study.series.forEach(series => {
       const ids = series.instances.map(instance => instance.id);
@@ -43,10 +52,9 @@ export class RemoteImageSource implements ImageSource {
     }));
     manifest.instances.forEach(({ metadata, preview }) => { if (preview) this.previews.set(metadata.sopInstanceUID, metadata); });
     manifest.instances.forEach(({ metadata }) => { if (metadata.imageFormat) this.images.set(metadata.sopInstanceUID, metadata); });
-    this.queue = new FrameRequestQueue((id, signal) => this.load(id, signal), this.network.limits());
-    this.network.onChange(() => this.queue.setLimits(this.network.limits()));
     // Start decoders and their codec while the first image downloads, instead of after it arrives.
     this.decoder.warm(new Set(manifest.instances.map(({ metadata }) => metadata.transferSyntaxUID)));
+    return this.studies;
   }
   async getStudyMetadata() { return this.studies; }
   metrics() { return this.cache.metrics(); }

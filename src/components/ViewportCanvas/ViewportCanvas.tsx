@@ -91,7 +91,7 @@ export const ViewportCanvas = memo(function ViewportCanvas({ viewport, series }:
   useEffect(() => {
     setCurrentFrame(undefined);
     displayedRef.current = -1;
-  }, [currentSeries, imageSource]);
+  }, [currentSeries?.id, imageSource]);
 
   useEffect(() => {
     if (!imageSource || !currentSeries) return;

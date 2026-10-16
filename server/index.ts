@@ -22,6 +22,8 @@ async function manifest(id: string): Promise<StudyManifest> {
 }
 const app = createApp({
   config, sessions: createSessions(db), sign: storage.sign, sourceVersion: storage.sourceVersion, listSource: storage.listSource, manifest,
+  async partialManifest(id) { return jobs.manifest(id); },
+  listSourceObjects: storage.listSourceObjects,
   async enqueue(id, objects, modality) {
     jobs.enqueue({ id, objects, modality });
   },

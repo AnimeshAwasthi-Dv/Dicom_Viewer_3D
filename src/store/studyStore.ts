@@ -3,6 +3,7 @@ import type { ImageSource } from '../viewer/dicom/ImageSource';
 import type { Series } from '../viewer/study/Series';
 import type { Study } from '../viewer/study/Study';
 import { resetBackgroundWork } from '../viewer/cache/BackgroundWork';
+import type { StudyManifest } from '../types/remote';
 
 interface StudyStore {
   imageSource?: ImageSource;
@@ -11,6 +12,7 @@ interface StudyStore {
   selectedSeriesId?: string;
   loading?: { phase: string; indexed: number; total: number };
   errors: string[];
+  remoteImportStatus?: StudyManifest['importStatus'];
   setLoading(loading?: StudyStore['loading']): void;
   setSource(imageSource: ImageSource, studies: Study[]): void;
   selectSeries(seriesId: string): void;
@@ -30,6 +32,7 @@ export const useStudyStore = create<StudyStore>((set) => ({
       resetBackgroundWork();
       return {
       imageSource,
+      remoteImportStatus: undefined,
       studies,
       selectedStudyId: studies[0]?.id,
       selectedSeriesId: studies[0]?.series[0]?.id,
@@ -39,7 +42,7 @@ export const useStudyStore = create<StudyStore>((set) => ({
     }),
   selectSeries: (seriesId) => set(state => ({ selectedSeriesId: seriesId, selectedStudyId: state.studies.find(study => study.series.some(series => series.id === seriesId))?.id })),
   addError: (error) => set((state) => ({ errors: [...state.errors.slice(-4), error] })),
-  reset: () => set({ imageSource: undefined, studies: [], selectedStudyId: undefined, selectedSeriesId: undefined, loading: undefined, errors: [] })
+  reset: () => set({ imageSource: undefined, studies: [], selectedStudyId: undefined, selectedSeriesId: undefined, loading: undefined, errors: [], remoteImportStatus: undefined })
 }));
 
 export function selectCurrentSeries(studies: Study[], seriesId?: string): Series | undefined {

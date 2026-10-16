@@ -5,6 +5,14 @@ import { config } from './fixtures';
 import type { ListObjectsV2Command, ListObjectsV2CommandOutput, S3Client } from '@aws-sdk/client-s3';
 
 describe('S3 study-folder listing', () => {
+  it('captures versions directly from listing without a HEAD request per image', async () => {
+    const storage = createStorage(config);
+    const send = vi.fn(async () => ({ Contents: [{ Key: 'studies/case/a.dcm', Size: 10, ETag: '"v1"' }] }));
+    storage.client.send = send as unknown as S3Client['send'];
+    expect(await storage.listSourceObjects('test-bucket', 'studies/case/', 10)).toEqual([{ key: 'studies/case/a.dcm', version: 'listing:"v1":10' }]);
+    expect(send).toHaveBeenCalledTimes(1);
+    storage.client.destroy();
+  });
   it('paginates within the requested prefix and ignores directory markers and empty files', async () => {
     const storage = createStorage(config);
     const send = vi.fn<(command: ListObjectsV2Command) => Promise<Partial<ListObjectsV2CommandOutput>>>();

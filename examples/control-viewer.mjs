@@ -15,8 +15,8 @@ const imported = await request('/api/v1/studies', 'POST', { ...source, ...(MODAL
 const deadline = Date.now() + 60 * 60 * 1000;
 while (true) {
   const study = await request(`/api/v1/studies/${imported.id}`);
-  if (study.status === 'completed') break;
   if (study.status === 'failed') throw new Error('Study import failed');
+  if (study.ready || study.status === 'completed') break;
   if (Date.now() > deadline) throw new Error(`Import is still pending. Resume polling study ${imported.id}`);
   await new Promise(resolve => setTimeout(resolve, 2000));
 }

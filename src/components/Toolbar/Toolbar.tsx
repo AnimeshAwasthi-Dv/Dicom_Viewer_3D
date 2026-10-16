@@ -31,6 +31,8 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
   const toggleDicomTags = useUiStore((state) => state.toggleDicomTags);
   const toggleExport = useUiStore((state) => state.toggleExport);
   const mprOpen = useUiStore((state) => state.mprOpen);
+  const importStatus = useStudyStore((state) => state.remoteImportStatus);
+  const mprPending = Boolean(importStatus && importStatus !== 'completed');
   const toggleMpr = useUiStore((state) => state.toggleMpr);
   const undoLast = useMeasurementStore((state) => state.undoLast);
   const clearForInstance = useMeasurementStore((state) => state.clearForInstance);
@@ -79,7 +81,7 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
       <div className="tool-group toolbar-actions">
         <div className="tool-group desktop-toolbar-actions">
         <button disabled={disabled} title="Undo last annotation or measurement (Ctrl+Z)" onClick={undoLast}><Undo2 size={16} /><span>Undo</span></button>
-        <button disabled={disabled || (series?.instances.length ?? 0) < 2} title="3D MPR" className={mprOpen ? 'active' : ''} onClick={toggleMpr}><Box size={16} /><span>MPR</span></button>
+        <button disabled={disabled || mprPending || (series?.instances.length ?? 0) < 2} title={mprPending ? 'MPR requires the completed study' : '3D MPR'} className={mprOpen ? 'active' : ''} onClick={toggleMpr}><Box size={16} /><span>MPR</span></button>
         {cineButton}
         </div>
         <button title="More tools" aria-label="More tools" aria-expanded={moreMenuOpen} className={moreMenuOpen ? 'active' : ''} onPointerDown={(event) => event.stopPropagation()} onClick={() => setMoreMenuOpen((open) => !open)}>
@@ -91,7 +93,7 @@ export function Toolbar({ disabled }: { disabled: boolean }): JSX.Element {
               <span className="more-menu-title">Actions</span>
               <div className="more-tool-grid">
         <button disabled={disabled} title="Undo last annotation or measurement (Ctrl+Z)" onClick={undoLast}><Undo2 size={16} /><span>Undo</span></button>
-        <button disabled={disabled || (series?.instances.length ?? 0) < 2} title="3D MPR" className={mprOpen ? 'active' : ''} onClick={toggleMpr}><Box size={16} /><span>MPR</span></button>
+        <button disabled={disabled || mprPending || (series?.instances.length ?? 0) < 2} title={mprPending ? 'MPR requires the completed study' : '3D MPR'} className={mprOpen ? 'active' : ''} onClick={toggleMpr}><Box size={16} /><span>MPR</span></button>
         {cineButton}
               </div>
             </div>

@@ -80,6 +80,27 @@ describe('persistent sessions without Redis', () => {
 describe('durable import queue without Redis', () => {
   const payload = { id: studyId, objects: [{ key: 'studies/scan.dcm', version: 'v1' }] };
 
+  it('persists partial chunks, preserves them during retries and fences stale publishers', () => {
+    let now = 1000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const dir = directory();
+    const jobs = createJobs(connect(dir));
+    jobs.enqueue(payload);
+    const stale = jobs.claim()!;
+    jobs.publishChunk(stale, manifest);
+    const reader = createJobs(connect(dir));
+    expect(reader.manifest(studyId)).toMatchObject({ importStatus: 'loading', instances: manifest.instances });
+    expect(reader.get(studyId)?.status).toBe('active');
+    now += JOB_LEASE_MS;
+    const claim = jobs.claim()!;
+    expect(() => jobs.publishChunk(stale, manifest)).toThrow('lease lost');
+    jobs.publishChunk(claim, { ...manifest, instances: manifest.instances.slice(0, 1) });
+    expect(reader.manifest(studyId)?.instances).toHaveLength(2);
+    jobs.complete(claim, manifest);
+    expect(reader.manifest(studyId)).toEqual(manifest);
+    expect(reader.get(studyId)?.status).toBe('completed');
+  });
+
   it('persists and deduplicates jobs across restarts and only allows one worker to claim a job', () => {
     const dir = directory();
     const db = connect(dir);

@@ -61,6 +61,18 @@ export function createJobs(db: DatabaseSync) {
           .run(claim.payload.id);
       });
     },
+    publishChunk(claim: ClaimedJob, manifest: StudyManifest): void {
+      transaction(db, () => {
+        if (!owns(claim)) throw new Error('Import job lease lost');
+        if (manifest.id !== claim.payload.id || !manifest.instances.length) throw new Error('Invalid import chunk');
+        const row = db.prepare('SELECT data FROM manifests WHERE id = ?').get(manifest.id);
+        const previous = row ? JSON.parse(String(row.data)) as StudyManifest : undefined;
+        // Retries replay the same versioned sources. Keep already available images while they catch up.
+        if (previous && previous.instances.length >= manifest.instances.length) return;
+        db.prepare('INSERT OR REPLACE INTO manifests (id, data) VALUES (?, ?)')
+          .run(manifest.id, JSON.stringify({ ...manifest, importStatus: 'loading' }));
+      });
+    },
     fail(claim: ClaimedJob, errorType: string): void {
       db.prepare(`UPDATE import_jobs SET status = ?, available_at = ?, owner = NULL, lease_until = NULL, error_type = ?
         WHERE id = ? AND status = 'active' AND owner = ? AND lease_until > ?`)

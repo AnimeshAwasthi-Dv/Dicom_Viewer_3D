@@ -15,10 +15,12 @@ export interface ApiDependencies {
   config: Config;
   sessions: Sessions;
   manifest(id: string): Promise<StudyManifest>;
+  partialManifest?(id: string): Promise<StudyManifest | undefined>;
   sign(key: string): Promise<string>;
   /** The source object's version (ETag, plus VersionId when versioning is on), or undefined when it doesn't exist. */
   sourceVersion(bucket: string, key: string): Promise<string | undefined>;
   listSource(bucket: string, prefix: string, maxEntries: number): Promise<string[]>;
+  listSourceObjects?(bucket: string, prefix: string, maxEntries: number): Promise<SourceObject[]>;
   enqueue(id: string, objects: SourceObject[], modality?: Modality): Promise<void>;
   job(id: string): Promise<{ status: string; progress: unknown } | undefined>;
   publish(id: string): Promise<void>;
@@ -77,9 +79,12 @@ export function createApp(deps: ApiDependencies) {
   const readyManifest = async (id: string) => {
     const job = await deps.job(id);
     if (!job) throw new HttpError(404, 'Study not found');
-    if (job.status !== 'completed') throw new HttpError(409, 'Study import is not complete');
-    return deps.manifest(id);
+    if (job.status === 'failed') throw new HttpError(409, 'Study import failed');
+    const manifest = job.status === 'completed' ? await deps.manifest(id) : await deps.partialManifest?.(id);
+    if (!manifest?.instances.length) throw new HttpError(409, 'Study has no available images yet');
+    return { ...manifest, importStatus: job.status === 'completed' ? 'completed' as const : 'loading' as const };
   };
+  const importStatus = (status?: string): NonNullable<StudyManifest['importStatus']> => status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'loading';
 
   const prepareStudy = async (body: unknown) => {
     const keySchema = z.string().min(1).max(1024);
@@ -93,15 +98,17 @@ export function createApp(deps: ApiDependencies) {
     try { location = sourceLocation(config, modality); } catch { throw new HttpError(400, 'Modality storage has not been configured'); }
     if (zipKey && !zipKey.toLowerCase().endsWith('.zip')) throw new HttpError(400, 'zipKey must end in .zip');
     if (sourcePrefix && (!sourcePrefix.endsWith('/') || !allowedSourceKey(sourcePrefix, location.prefixes))) throw new HttpError(400, 'sourcePrefix must be a study subfolder inside an allowed source prefix, ending in /');
-    const keys = [...new Set(sourcePrefix ? await deps.listSource(location.bucket, sourcePrefix, config.MAX_ZIP_ENTRIES) : objectKeys ?? [zipKey!])].sort();
+    const listed = sourcePrefix && deps.listSourceObjects ? await deps.listSourceObjects(location.bucket, sourcePrefix, config.MAX_ZIP_ENTRIES) : undefined;
+    const keys = [...new Set(listed ? listed.map(object => object.key) : sourcePrefix ? await deps.listSource(location.bucket, sourcePrefix, config.MAX_ZIP_ENTRIES) : objectKeys ?? [zipKey!])].sort();
     if (!keys.length) throw new HttpError(404, 'No source files found');
     if (keys.length > config.MAX_ZIP_ENTRIES) throw new HttpError(400, 'Too many source files');
     if (keys.some(key => !allowedSourceKey(key, location.prefixes) || key.endsWith('/'))) throw new HttpError(400, 'Source keys must be files inside an allowed source prefix');
+    const listedVersions = new Map(listed?.map(object => [object.key, object.version]));
     const objects: SourceObject[] = [];
     // Limit concurrent HEADs while capturing the exact object versions for this import.
     for (let start = 0; start < keys.length; start += 16) {
       objects.push(...await Promise.all(keys.slice(start, start + 16).map(async key => {
-        const version = await deps.sourceVersion(location.bucket, key);
+        const version = listedVersions.get(key) ?? await deps.sourceVersion(location.bucket, key);
         if (!version) throw new HttpError(404, 'Source file not found or inaccessible');
         return { key, version };
       })));
@@ -124,7 +131,7 @@ export function createApp(deps: ApiDependencies) {
     const url = new URL(config.PUBLIC_URL);
     url.searchParams.set('session', session.id);
     url.hash = `token=${token}`;
-    return { ...snapshot(session), viewerUrl: url.toString() };
+    return { ...snapshot(session), viewerUrl: url.toString(), importStatus: manifest.importStatus, availableInstances: manifest.instances.length };
   };
 
   app.post('/api/v1/studies', service, async (req, res) => {
@@ -135,7 +142,8 @@ export function createApp(deps: ApiDependencies) {
   // Pending imports remain asynchronous so a large ZIP cannot hold an HTTP request open.
   app.post('/api/v1/viewer-links', service, async (req, res) => {
     const study = await prepareStudy(req.body);
-    if (study.status !== 'completed') {
+    const partial = study.status === 'completed' ? undefined : await deps.partialManifest?.(study.id);
+    if (study.status !== 'completed' && !partial?.instances.length) {
       res.setHeader('Retry-After', '2');
       res.status(202).json({ studyId: study.id, status: study.status, statusUrl: study.statusUrl, reused: study.reused, retryAfterSeconds: 2 });
       return;
@@ -147,8 +155,10 @@ export function createApp(deps: ApiDependencies) {
     const id = idSchema.parse(req.params.id);
     const job = await deps.job(id);
     if (!job) throw new HttpError(404, 'Study not found');
-    const manifest = job.status === 'completed' ? await deps.manifest(id) : undefined;
-    res.json({ id, ...job, ...(job.status === 'failed' ? { error: 'Import failed; check the import worker logs' } : {}), ...(manifest ? { manifest: { ...manifest, instances: manifest.instances.map(({ metadata }) => ({ metadata })) } } : {}) });
+    const manifest = job.status === 'completed' ? await deps.manifest(id) : await deps.partialManifest?.(id);
+    res.json({ id, ...job, ready: job.status !== 'failed' && Boolean(manifest?.instances.length), availableInstances: manifest?.instances.length ?? 0,
+      ...(job.status === 'failed' ? { error: 'Import failed; check the import worker logs' } : {}),
+      ...(manifest ? { manifest: { ...manifest, importStatus: importStatus(job.status), instances: manifest.instances.map(({ metadata }) => ({ metadata })) } } : {}) });
   });
   app.post('/api/v1/sessions', service, async (req, res) => {
     const { studyId } = z.object({ studyId: idSchema }).strict().parse(req.body);
@@ -164,6 +174,7 @@ export function createApp(deps: ApiDependencies) {
     const input = z.object({ expectedRevision: z.number().int().min(0), studyId: idSchema.optional(), state: remoteStateSchema }).strict().parse(req.body);
     const studyId = input.studyId ?? session.studyId;
     const manifest = await readyManifest(studyId);
+    if (input.state.mprOpen && manifest.importStatus !== 'completed') throw new HttpError(409, 'MPR requires the completed study');
     if (!validateState(input.state, manifest)) throw new HttpError(400, 'Unknown series, out-of-range slice, or measurement outside the study');
     const revision = await sessions.update(session.id, input.expectedRevision, studyId, input.state);
     if (revision === -1) throw new HttpError(404, 'Session expired');
@@ -182,7 +193,8 @@ export function createApp(deps: ApiDependencies) {
   app.get('/api/viewer/:id/manifest', viewer, async (_req, res) => {
     const session = res.locals.session as SessionRecord;
     const manifest = await deps.manifest(session.studyId);
-    res.json({ ...manifest, instances: manifest.instances.map(({ metadata, previewKey }) => ({ metadata, ...(previewKey ? { preview: true } : {}) })) });
+    const job = await deps.job(session.studyId);
+    res.json({ ...manifest, importStatus: importStatus(job?.status), instances: manifest.instances.map(({ metadata, previewKey }) => ({ metadata, ...(previewKey ? { preview: true } : {}) })) });
   });
   app.post('/api/viewer/:id/frames', viewer, async (req, res) => {
     const { instanceIds } = z.object({ instanceIds: z.array(z.string().max(128)).min(1).max(32) }).strict().parse(req.body);
@@ -213,6 +225,8 @@ export function createApp(deps: ApiDependencies) {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
     let revision = -1;
+    let studyVersion = '';
+    let lastHeartbeat = 0;
     let busy = false;
     let dirty = false;
     const send = (message: unknown) => { if (!res.write(`${JSON.stringify(message)}\n`)) res.end(); };
@@ -228,13 +242,20 @@ export function createApp(deps: ApiDependencies) {
           if (current.revision !== revision) {
             revision = current.revision;
             send({ type: 'state', session: snapshot(current) });
-          } else send({ type: 'heartbeat' });
+          }
+          const job = await deps.job(current.studyId);
+          const manifest = await deps.partialManifest?.(current.studyId);
+          const progress = { studyId: current.studyId, importStatus: importStatus(job?.status), availableInstances: manifest?.instances.length ?? 0, skippedFiles: manifest?.skippedFiles ?? 0 };
+          const version = JSON.stringify(progress);
+          if (res.destroyed || res.writableEnded) return;
+          if (version !== studyVersion) { studyVersion = version; send({ type: 'study', ...progress }); }
+          else if (Date.now() - lastHeartbeat >= 10000) { lastHeartbeat = Date.now(); send({ type: 'heartbeat' }); }
         } while (dirty);
       } catch { res.end(); }
       finally { busy = false; }
     };
     const unsubscribe = deps.subscribe(session.id, () => void refresh());
-    const heartbeat = setInterval(() => void refresh(), 10000);
+    const heartbeat = setInterval(() => void refresh(), 2000);
     const expiry = setTimeout(() => { send({ type: 'expired' }); res.end(); }, Math.max(1, session.expiresAt - Date.now()));
     res.on('close', () => { unsubscribe(); clearInterval(heartbeat); clearTimeout(expiry); });
     await refresh();

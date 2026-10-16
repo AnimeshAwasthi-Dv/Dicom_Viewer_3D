@@ -4,7 +4,7 @@ A local-first, web-based DICOM and image viewer branded as DecXpert Viewer, buil
 
 The repository also includes an EC2-ready API and import worker for private S3 studies, persistent SQLite sessions and import jobs, and live remote control from another service. No Redis service is required. The supplied deployment configuration uses `https://dicom.admindectrocel.online` and bucket `animesh-arn` in `us-east-1`, reading `test/hospitals/` and `test/studies/`. See the [EC2 deployment and API guide](docs/ec2-viewer-service.md), [.env.example](.env.example), and [portal integration example](examples/control-viewer.mjs). Local file viewing continues to work without the backend.
 
-For a portal opening studies already in S3, use `POST /api/v1/viewer-links`. It queues an import or returns a ready viewer URL. See the [portal API integration guide](docs/portal-integration.md) for request examples, the reusable Node.js client and an EC2 smoke-test command.
+For a portal opening studies already in S3, use `POST /api/v1/viewer-links`. It queues an import or returns a viewer URL as soon as the first images are uploaded. The viewer adds subsequent chunks in place and displays import progress. When polling, create a session at `ready: true` rather than waiting for the full import. See the [portal API integration guide](docs/portal-integration.md) for request examples, the reusable Node.js client and an EC2 smoke-test command.
 
 ## Requirements
 

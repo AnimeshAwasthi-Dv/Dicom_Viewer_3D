@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import type { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { importS3Study } from '../sourceImporter';
-import { objectVersion } from '../sources';
+import { listedObjectVersion, objectVersion } from '../sources';
 import { config, dicomFile } from './fixtures';
 
 describe('S3 study import', () => {
@@ -29,6 +29,18 @@ describe('S3 study import', () => {
     await expect(importS3Study(config, client, job, write, async () => undefined)).rejects.toThrow('Source changed');
     expect(body.destroyed).toBe(true);
     expect(write).not.toHaveBeenCalled();
+  });
+  it('checks listing ETags against GET while allowing versioned bucket responses', async () => {
+    const { client, send, write, job } = setup();
+    const data = dicomFile();
+    job.objects[0].version = listedObjectVersion({ ETag: '"version-1"', Size: data.length });
+    send.mockResolvedValue({ Body: Readable.from([data]), ETag: '"version-1"', ContentLength: data.length, VersionId: 'versioned-bucket-id' } as Awaited<ReturnType<typeof send>>);
+    const publish = vi.fn(async () => undefined);
+    await importS3Study(config, client, job, write, async () => undefined, publish);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ importStatus: 'loading', instances: [expect.any(Object)] }));
+    expect(write).toHaveBeenLastCalledWith('derived/test-import/manifest.json', expect.any(Buffer), 'application/json');
+    send.mockResolvedValue({ Body: Readable.from([data]), ETag: '"changed"', ContentLength: data.length });
+    await expect(importS3Study(config, client, job, write, async () => undefined)).rejects.toThrow('Source changed');
   });
   it('rechecks allowed prefixes in the worker before fetching any object', async () => {
     const { client, send, write, job } = setup();

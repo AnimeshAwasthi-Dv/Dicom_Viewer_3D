@@ -50,6 +50,8 @@ export const remoteStateSchema = z.object({
 export type RemoteState = z.infer<typeof remoteStateSchema>;
 export interface StudyManifest {
   id: string;
+  /** Missing on older, fully imported manifests. Partial manifests contain only uploaded images. */
+  importStatus?: 'loading' | 'completed' | 'failed';
   /** `previewKey`: a low-resolution preview of the slice, for large uncompressed slices imported since previews were added. */
   instances: Array<{ key: string; previewKey?: string; metadata: DicomMetadata }>;
   skippedFiles: number;

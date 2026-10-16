@@ -2,10 +2,25 @@ import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCom
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Config } from './config';
 import type { StudyManifest } from '../src/types/remote';
-import { objectVersion } from './sources';
+import { listedObjectVersion, objectVersion, type SourceObject } from './sources';
 
 export function createStorage(config: Config) {
   const client = new S3Client({ region: config.AWS_REGION });
+  async function listObjects(bucket: string, prefix: string, maxEntries: number) {
+    const objects: Array<{ Key: string; ETag?: string; Size?: number }> = [];
+    let scanned = 0;
+    let token: string | undefined;
+    do {
+      const result = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token, MaxKeys: 1000 }));
+      for (const object of result.Contents ?? []) {
+        if (++scanned > maxEntries) throw new Error('Source prefix contains too many objects; select a smaller study folder');
+        if (object.Key && !object.Key.endsWith('/') && (object.Size ?? 0) > 0) objects.push({ Key: object.Key, ETag: object.ETag, Size: object.Size });
+      }
+      token = result.IsTruncated ? result.NextContinuationToken : undefined;
+      if (result.IsTruncated && !token) throw new Error('Incomplete S3 listing');
+    } while (token);
+    return objects;
+  }
   return {
     client,
     async manifest(id: string): Promise<StudyManifest> {
@@ -26,19 +41,10 @@ export function createStorage(config: Config) {
       }
     },
     async listSource(bucket: string, prefix: string, maxEntries: number): Promise<string[]> {
-      const keys: string[] = [];
-      let scanned = 0;
-      let token: string | undefined;
-      do {
-        const result = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token, MaxKeys: 1000 }));
-        for (const object of result.Contents ?? []) {
-          if (++scanned > maxEntries) throw new Error('Source prefix contains too many objects; select a smaller study folder');
-          if (object.Key && !object.Key.endsWith('/') && (object.Size ?? 0) > 0) keys.push(object.Key);
-        }
-        token = result.IsTruncated ? result.NextContinuationToken : undefined;
-        if (result.IsTruncated && !token) throw new Error('Incomplete S3 listing');
-      } while (token);
-      return keys;
+      return (await listObjects(bucket, prefix, maxEntries)).map(object => object.Key);
+    },
+    async listSourceObjects(bucket: string, prefix: string, maxEntries: number): Promise<SourceObject[]> {
+      return (await listObjects(bucket, prefix, maxEntries)).map(object => ({ key: object.Key, version: listedObjectVersion(object) }));
     },
     async sign(key: string) {
       return getSignedUrl(client, new GetObjectCommand({ Bucket: config.S3_BUCKET, Key: key }), { expiresIn: 300 });

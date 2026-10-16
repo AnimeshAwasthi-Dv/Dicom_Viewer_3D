@@ -5,9 +5,11 @@ import { useStudyStore } from '../../store/studyStore';
 import { RemoteClient } from '../../viewer/remote/RemoteClient';
 import { RemoteImageSource } from '../../viewer/dicom/RemoteImageSource';
 import { applyRemoteState, captureRemoteState } from '../../viewer/remote/state';
+import { importMessage, refreshRemoteStudy } from '../../viewer/remote/progressiveStudy';
 
 export function RemoteSession(): JSX.Element | null {
   const [status, setStatus] = useState('');
+  const [progressMessage, setProgressMessage] = useState('');
   useEffect(() => {
     const url = new URL(window.location.href);
     const id = url.searchParams.get('session');
@@ -34,6 +36,30 @@ export function RemoteSession(): JSX.Element | null {
     let lastStatus = '';
     let lastSentAt = 0;
     let errorMessage: string | undefined;
+    let manifestDirty = false;
+    let refreshingManifest = false;
+    // Stream notifications are coalesced while a manifest fetch is in flight.
+    async function refreshManifest() {
+      if (refreshingManifest || applying || !source || abort.signal.aborted) return;
+      refreshingManifest = true;
+      try {
+        while (manifestDirty && source && !abort.signal.aborted) {
+          manifestDirty = false;
+          const currentSource: RemoteImageSource = source;
+          const expectedStudy = studyId;
+          const response = await client.request('manifest', { signal: abort.signal });
+          const manifest = await response.json() as PublicManifest;
+          if (abort.signal.aborted || source !== currentSource || manifest.id !== expectedStudy) continue;
+          refreshRemoteStudy(currentSource, manifest);
+          setProgressMessage(importMessage(manifest));
+        }
+      } catch {
+        if (!abort.signal.aborted) {
+          manifestDirty = true;
+          setProgressMessage('Study update interrupted. Retrying; additional images may still be loading.');
+        }
+      } finally { refreshingManifest = false; }
+    }
     // The manifest is for the session's study, which is almost always the one the first state message names:
     // download it alongside the event stream instead of after the first message arrives.
     let prefetchedManifest: Promise<PublicManifest> | undefined = client.request('manifest', { signal: abort.signal }).then(response => response.json() as Promise<PublicManifest>);
@@ -81,6 +107,8 @@ export function RemoteSession(): JSX.Element | null {
             source?.dispose();
             source = nextSource;
             useStudyStore.getState().setSource(source, studies);
+            useStudyStore.setState({ remoteImportStatus: manifest.importStatus ?? 'completed' });
+            setProgressMessage(importMessage(manifest));
             studyId = next.studyId;
           }
           if (abort.signal.aborted) return;
@@ -98,7 +126,7 @@ export function RemoteSession(): JSX.Element | null {
           useStudyStore.getState().setLoading(undefined);
           void reportStatus();
         }
-      } finally { applying = false; }
+      } finally { applying = false; void refreshManifest(); }
     }
 
     async function connect() {
@@ -117,10 +145,11 @@ export function RemoteSession(): JSX.Element | null {
               buffer += decoder.decode(result.value, { stream: true });
               let newline;
               while ((newline = buffer.indexOf('\n')) >= 0) {
-                const message = JSON.parse(buffer.slice(0, newline)) as { type: string; session?: SessionSnapshot };
+                const message = JSON.parse(buffer.slice(0, newline)) as { type: string; session?: SessionSnapshot; studyId?: string };
                 buffer = buffer.slice(newline + 1);
                 if (message.type === 'expired') {
                   setStatus('Viewer session expired or revoked.');
+                  setProgressMessage('');
                   source?.dispose();
                   useStudyStore.getState().reset();
                   sessionStorage.removeItem(storageKey);
@@ -128,6 +157,7 @@ export function RemoteSession(): JSX.Element | null {
                   return;
                 }
                 if (message.type === 'state' && message.session) { latest = message.session; void applyLatest(); }
+                if (message.type === 'study') { manifestDirty = true; void refreshManifest(); }
               }
             }
           } finally { await reader.cancel().catch(() => undefined); }
@@ -135,6 +165,7 @@ export function RemoteSession(): JSX.Element | null {
           if (abort.signal.aborted) return;
           if (error instanceof Error && error.message.includes('expired')) {
             setStatus(error.message);
+            setProgressMessage('');
             source?.dispose();
             useStudyStore.getState().reset();
             sessionStorage.removeItem(storageKey);
@@ -150,7 +181,7 @@ export function RemoteSession(): JSX.Element | null {
         });
       }
     }
-    const interval = window.setInterval(() => { void reportStatus(); if (latest) void applyLatest(); }, 1000);
+    const interval = window.setInterval(() => { void reportStatus(); if (latest) void applyLatest(); if (manifestDirty) void refreshManifest(); }, 1000);
     void connect();
     return () => { abort.abort(); source?.dispose(); window.clearInterval(interval); };
   }, []);
@@ -162,5 +193,5 @@ export function RemoteSession(): JSX.Element | null {
     const timer = window.setTimeout(() => setHidden(true), 2500);
     return () => window.clearTimeout(timer);
   }, [status]);
-  return status && !hidden ? <div className="remote-session-status" role="status">{status}</div> : null;
+  return progressMessage || (status && !hidden) ? <div className="remote-session-status" role="status">{progressMessage || status}</div> : null;
 }

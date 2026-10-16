@@ -11,6 +11,7 @@ import { remoteStateSchema } from '../../src/types/remote';
 import { initialState, validateState } from '../validation';
 import type { Config } from '../config';
 import type { SourceObject } from '../sources';
+import type { StudyManifest } from '../../src/types/remote';
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -22,6 +23,7 @@ async function harness(overrides: Partial<Config> = {}) {
   const jobs = new Map<string, string>([[studyId, 'completed']]);
   const enqueued: string[] = [];
   const selections: SourceObject[][] = [];
+  const partials = new Map<string, StudyManifest>();
   const records = new Map<string, SessionRecord>();
   const events = new EventEmitter();
   const statuses = new Map<string, string>();
@@ -44,7 +46,8 @@ async function harness(overrides: Partial<Config> = {}) {
     async status(id, value) { if (value) statuses.set(id, value); return statuses.get(id) ?? null; }
   };
   const app = createApp({
-    config: { ...config, ...overrides }, sessions, manifest: async () => manifest, sign: async key => `https://s3.example.com/${key}`,
+    config: { ...config, ...overrides }, sessions, manifest: async id => partials.get(id) ?? manifest,
+    partialManifest: async id => partials.get(id), sign: async key => `https://s3.example.com/${key}`,
     sourceVersion: async (_bucket, key) => versions.get(key),
     listSource: async (_bucket, prefix) => [...versions.keys()].filter(key => key.startsWith(prefix)),
     enqueue: async (id, objects) => { enqueued.push(id); selections.push(objects); jobs.set(id, 'waiting'); },
@@ -67,9 +70,60 @@ async function harness(overrides: Partial<Config> = {}) {
     const token = new URLSearchParams(new URL(session.viewerUrl).hash.slice(1)).get('token')!;
     return { ...session, token };
   };
-  return { request, create, versions, jobs, enqueued, selections };
+  return { request, create, versions, jobs, enqueued, selections, partials, events };
+}
+async function readEvent(reader: ReadableStreamDefaultReader<Uint8Array>, type: string) {
+  let buffer = '';
+  const decoder = new TextDecoder();
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) throw new Error('Event stream ended');
+    buffer += decoder.decode(chunk.value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const value = JSON.parse(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      if (value.type === type) return value;
+    }
+  }
 }
 describe('viewer API', () => {
+  it('opens and streams available chunks before completion, then reports terminal failures', async () => {
+    const { request, jobs, partials, events } = await harness();
+    const source = { zipKey: 'studies/a.zip' };
+    const queued = await (await request('/api/v1/viewer-links', 'POST', source)).json();
+    expect((await request('/api/v1/sessions', 'POST', { studyId: queued.studyId })).status).toBe(409);
+    jobs.set(queued.studyId, 'active');
+    partials.set(queued.studyId, { ...manifest, id: queued.studyId, importStatus: 'loading', instances: manifest.instances.slice(0, 1) });
+    const status = await (await request(queued.statusUrl)).json();
+    expect(status).toMatchObject({ status: 'active', ready: true, availableInstances: 1 });
+    const link = await request('/api/v1/viewer-links', 'POST', source);
+    expect(link.status).toBe(201);
+    const session = await link.json();
+    expect(session).toMatchObject({ status: 'ready', importStatus: 'loading', availableInstances: 1 });
+    const token = new URLSearchParams(new URL(session.viewerUrl).hash.slice(1)).get('token')!;
+    const getManifest = () => request(`/api/viewer/${session.id}/manifest`, 'GET', undefined, token);
+    expect(await (await getManifest()).json()).toMatchObject({ importStatus: 'loading', instances: [expect.any(Object)] });
+    expect((await request(`/api/viewer/${session.id}/frames`, 'POST', { instanceIds: ['1.2.3.4.2'] }, token)).status).toBe(404);
+    expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 0, state: { ...session.state, mprOpen: true } })).status).toBe(409);
+    const stream = await request(`/api/viewer/${session.id}/events`, 'GET', undefined, token);
+    const reader = stream.body!.getReader();
+    expect(await readEvent(reader, 'study')).toMatchObject({ importStatus: 'loading', availableInstances: 1 });
+    partials.set(queued.studyId, { ...manifest, id: queued.studyId, importStatus: 'loading' });
+    events.emit(session.id);
+    expect(await readEvent(reader, 'study')).toMatchObject({ importStatus: 'loading', availableInstances: 2 });
+    expect((await request(`/api/viewer/${session.id}/frames`, 'POST', { instanceIds: ['1.2.3.4.2'] }, token)).status).toBe(200);
+    jobs.set(queued.studyId, 'failed');
+    events.emit(session.id);
+    expect(await readEvent(reader, 'study')).toMatchObject({ importStatus: 'failed', availableInstances: 2 });
+    expect(await (await getManifest()).json()).toMatchObject({ importStatus: 'failed' });
+    expect((await request('/api/v1/sessions', 'POST', { studyId: queued.studyId })).status).toBe(409);
+    jobs.set(queued.studyId, 'completed');
+    events.emit(session.id);
+    expect(await readEvent(reader, 'study')).toMatchObject({ importStatus: 'completed', availableInstances: 2 });
+    expect(await (await getManifest()).json()).toMatchObject({ importStatus: 'completed' });
+    await reader.cancel();
+  });
   it('queues a viewer link then creates usable, independent sessions for the completed selection', async () => {
     const { request, versions, jobs, enqueued } = await harness();
     versions.set('studies/case/photo.png', 'png-v1');
@@ -236,14 +290,12 @@ describe('viewer API', () => {
     expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 0, state })).status).toBe(409);
     const stream = await request(`/api/viewer/${session.id}/events`, 'GET', undefined, session.token);
     const reader = stream.body!.getReader();
-    const first = await reader.read();
-    const event = JSON.parse(new TextDecoder().decode(first.value).split('\n')[0]);
+    const event = await readEvent(reader, 'state');
     expect(event.session.revision).toBe(1);
     expect(event.session.state.viewports[0].instanceIndex).toBe(1);
     state.viewports[0].instanceIndex = 0;
     expect((await request(`/api/v1/sessions/${session.id}/state`, 'PUT', { expectedRevision: 1, state })).status).toBe(200);
-    const update = await reader.read();
-    const updateEvent = JSON.parse(new TextDecoder().decode(update.value).split('\n')[0]);
+    const updateEvent = await readEvent(reader, 'state');
     expect(updateEvent.session.revision).toBe(2);
     expect(updateEvent.session.state.viewports[0].instanceIndex).toBe(0);
     await reader.cancel();

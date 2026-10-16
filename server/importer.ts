@@ -15,6 +15,7 @@ export interface ImportLimits { maxEntries: number; maxEntryBytes: number; maxEx
 export type WriteObject = (key: string, bytes: Uint8Array, contentType: string, contentEncoding?: string) => Promise<void>;
 export interface ImportSource { name: string; stream: Readable }
 type Progress = (value: { indexed: number; skipped: number }) => Promise<void>;
+export type PublishChunk = (manifest: StudyManifest) => Promise<void>;
 const gzipAsync = promisify(gzip);
 const PARALLEL_WRITES = 8;
 
@@ -64,7 +65,7 @@ export function importZip(source: Readable, id: string, prefix: string, limits: 
 
 export async function importSources(
   sources: AsyncIterable<ImportSource> | Iterable<ImportSource>, id: string, prefix: string,
-  limits: ImportLimits, write: WriteObject, progress: Progress
+  limits: ImportLimits, write: WriteObject, progress: Progress, publishChunk?: PublishChunk
 ): Promise<StudyManifest> {
   const manifest: StudyManifest = { id, instances: [], skippedFiles: 0 };
   const seen = new Set<string>();
@@ -73,6 +74,16 @@ export async function importSources(
   const parser = new DicomParser();
   const writes = new Set<Promise<void>>();
   let writeError: unknown;
+  let published = 0;
+  let lastPublishedAt = 0;
+  const publish = async () => {
+    // A chunk never advertises an object until its full image and preview are uploaded.
+    await Promise.all(writes);
+    if (writeError) throw writeError;
+    await publishChunk?.({ ...manifest, instances: [...manifest.instances], importStatus: 'loading' });
+    published = manifest.instances.length;
+    lastPublishedAt = Date.now();
+  };
   const upload = async (key: string, data: Uint8Array, parsed: ParsedDicomFile, preview?: { key: string; bytes: Uint8Array }) => {
     const { bytes, contentEncoding } = await encodeForStorage(data, parsed.metadata.transferSyntaxUID);
     await write(key, bytes, parsed.metadata.imageFormat ? `image/${parsed.metadata.imageFormat}` : 'application/dicom', contentEncoding);
@@ -126,11 +137,13 @@ export async function importSources(
       if (writeError) throw writeError;
       delete parsed.metadata.rawTags;
       manifest.instances.push({ key, ...(preview ? { previewKey: preview.key } : {}), metadata: parsed.metadata });
+      if (publishChunk && (published === 0 || manifest.instances.length - published >= 20 || Date.now() - lastPublishedAt >= 1000)) await publish();
       if (manifest.instances.length % 20 === 0) await progress({ indexed: manifest.instances.length, skipped: manifest.skippedFiles });
     }
     await Promise.all(writes);
     if (writeError) throw writeError;
     if (!manifest.instances.length) throw new Error('Import contains no supported DICOM, JPEG, or PNG images');
+    if (publishChunk && published < manifest.instances.length) await publish();
     await progress({ indexed: manifest.instances.length, skipped: manifest.skippedFiles });
     return manifest;
   } finally {

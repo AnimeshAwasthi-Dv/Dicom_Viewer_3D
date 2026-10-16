@@ -76,8 +76,8 @@ export function createViewerClient({
       if (link.status === 'ready') return link;
       for (;;) {
         const study = await getStudy(studyId, { signal: combined });
-        if (study.status === 'completed') return { ...await createSession(studyId, { signal: combined }), studyId };
         if (study.status === 'failed') throw new ViewerApiError('Study import failed; check the viewer worker logs', { studyId });
+        if (study.ready || study.status === 'completed') return { ...await createSession(studyId, { signal: combined }), studyId };
         await delay(pollIntervalMs, undefined, { signal: combined });
       }
     } catch (error) {
